@@ -21,6 +21,7 @@ CFLAGS = -fPIC -I$(ERTS_INCLUDE_DIR) \
 	-I$(INSTALL_DIR)/include \
 	-I/home/sean/llvm-project/mlir/include \
 	-I$(LLVM_DIR)/include \
+	-I$(LLVM_DIR)/tools/include \
 	-I/home/sean/llvm-project/llvm/include \
 	-Wall -std=c++17
 
