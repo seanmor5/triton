@@ -59,7 +59,7 @@ install: build
 	@echo "Installing Triton library and includes..."
 	@mkdir -p $(INSTALL_DIR)/lib $(INSTALL_DIR)/include
 	@ln -sf $(BUILD_DIR)/lib/libtriton.so $(INSTALL_DIR)/lib/
-	@ln -sf $(CACHE_DIR)/triton/include/triton $(INSTALL_DIR)/include/
+	@ln -sf $(BUILD_DIR)/include/triton $(INSTALL_DIR)/include/
 
 # Clean build artifacts
 clean:
