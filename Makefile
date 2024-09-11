@@ -2,8 +2,7 @@
 
 # Configuration
 TRITON_REPO := https://github.com/triton-lang/triton.git
-# 2.1.0
-TRITON_COMMIT := da40a1e984bf57c4708daf603eb427442025f99b
+TRITON_COMMIT := 94141657e5997a71f65f5cf83a0a5277c02f4046
 CACHE_DIR := $(HOME)/.cache/triton-build
 BUILD_DIR := $(CACHE_DIR)/build
 INSTALL_DIR := priv
