@@ -7,6 +7,8 @@ CACHE_DIR := $(HOME)/.cache/triton-build
 BUILD_DIR := $(CACHE_DIR)/build
 INSTALL_DIR := priv
 
+LLVM_DIR = /home/sean/llvm-project/build/
+
 # Commands
 CMAKE := cmake
 MAKE := make
@@ -34,7 +36,9 @@ build: fetch
 		-DTRITON_BUILD_PYTHON_MODULE=OFF \
 		-DTRITON_BUILD_TUTORIALS=OFF \
 		-DTRITON_BUILD_PROTON=OFF \
-		-DTRITON_BUILD_UT=OFF
+		-DTRITON_BUILD_UT=OFF \
+		-DLLVM_DIR=$(LLVM_DIR)/lib/cmake/llvm \
+		-DMLIR_DIR=$(LLVM_DIR)/lib/cmake/mlir
 	@cd $(BUILD_DIR) && $(MAKE) -j$$(nproc)
 
 # Install (symlink) Triton library and includes
