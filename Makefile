@@ -14,9 +14,15 @@ CMAKE := cmake
 MAKE := make
 GIT := git
 
-.PHONY: all clean fetch build install
+.PHONY: all clean triton fetch build install
 
-all: fetch build install
+LDFLAGS = -L$(INSTALL_DIR)/lib
+CFLAGS = -fPIC -I$(ERTS_INCLUDE_DIR) -I$(INSTALL_DIR)/include -Wall -std=c++17
+
+all: triton
+	$(CXX) $(CFLAGS) c_src/triton.cc -o priv/libtriton_ex.so $(LDFLAGS)
+
+triton: fetch build install
 
 # Fetch Triton repository
 fetch:
@@ -39,7 +45,7 @@ build: fetch
 		-DTRITON_BUILD_UT=OFF \
 		-DLLVM_DIR=$(LLVM_DIR)/lib/cmake/llvm \
 		-DMLIR_DIR=$(LLVM_DIR)/lib/cmake/mlir \
-		-DTRITON_CODEGEN_BACKENDS="nvidia,amd"
+		-DTRITON_CODEGEN_BACKENDS="nvidia"
 	@cd $(BUILD_DIR) && $(MAKE) -j$$(nproc)
 
 # Install (symlink) Triton library and includes

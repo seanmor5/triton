@@ -9,7 +9,7 @@ defmodule TritonTest do
         Tl.abs(x)
       end
 
-      Triton.jit(fun) |> IO.inspect
+      Triton.jit(fun) |> IO.inspect()
     end
   end
 end
