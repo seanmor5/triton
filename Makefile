@@ -39,7 +39,7 @@ build: fetch
 		-DTRITON_BUILD_UT=OFF \
 		-DLLVM_DIR=$(LLVM_DIR)/lib/cmake/llvm \
 		-DMLIR_DIR=$(LLVM_DIR)/lib/cmake/mlir \
-		-DTRITON_CODEGEN_BACKENDS="nvidia"
+		-DTRITON_CODEGEN_BACKENDS="nvidia,amd"
 	@cd $(BUILD_DIR) && $(MAKE) -j$$(nproc)
 
 # Install (symlink) Triton library and includes
