@@ -17,7 +17,11 @@ GIT := git
 .PHONY: all clean triton fetch build install
 
 LDFLAGS = -L$(INSTALL_DIR)/lib
-CFLAGS = -fPIC -I$(ERTS_INCLUDE_DIR) -I$(INSTALL_DIR)/include -Wall -std=c++17
+CFLAGS = -fPIC -I$(ERTS_INCLUDE_DIR) \
+	-I$(INSTALL_DIR)/include \
+	-I/home/sean/llvm-project/mlir/include \
+	-I$(LLVM_DIR)/include \
+	-Wall -std=c++17
 
 all: triton
 	$(CXX) $(CFLAGS) c_src/triton.cc -o priv/libtriton_ex.so $(LDFLAGS)
