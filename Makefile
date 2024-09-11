@@ -59,7 +59,8 @@ install: build
 	@echo "Installing Triton library and includes..."
 	@mkdir -p $(INSTALL_DIR)/lib $(INSTALL_DIR)/include
 	@ln -sf $(BUILD_DIR)/lib/libtriton.so $(INSTALL_DIR)/lib/
-	@ln -sf $(BUILD_DIR)/include/triton $(INSTALL_DIR)/include/
+	@cp -r $(BUILD_DIR)/include/triton/**/*.h.inc $(INSTALL_DIR)/include/triton
+	@cp -r $(CACHE_DIR)/include/triton/**/*.h $(INSTALL_DIR)/include/triton
 
 # Clean build artifacts
 clean:
