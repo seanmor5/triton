@@ -59,8 +59,10 @@ install: build
 	@echo "Installing Triton library and includes..."
 	@mkdir -p $(INSTALL_DIR)/lib $(INSTALL_DIR)/include
 	@ln -sf $(BUILD_DIR)/lib/libtriton.so $(INSTALL_DIR)/lib/
-	@find $(BUILD_DIR)/include/triton -name '*.h.inc' -exec cp -r --parents {} $(INSTALL_DIR)/include \;
-	@find $(CACHE_DIR)/triton/include -name '*.h' -exec cp -r --parents {} $(INSTALL_DIR)/include \;
+	@cd $(BUILD_DIR)/include && find triton -name '*.h.inc' -type f | \
+		xargs -I {} cp --parents {} $(INSTALL_DIR)/include/
+	@cd $(CACHE_DIR)/triton/include && find . -name '*.h' -type f | \
+		xargs -I {} cp --parents {} $(INSTALL_DIR)/include/
 
 # Clean build artifacts
 clean:
