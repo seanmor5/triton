@@ -1,4 +1,4 @@
-# Makefile for building Triton library with LLVM
+# Makefile for building Triton library with LLVM and MLIR
 
 # Configuration
 TRITON_REPO := https://github.com/triton-lang/triton.git
@@ -13,9 +13,14 @@ CMAKE := cmake
 MAKE := make
 GIT := git
 
+# LLVM configuration
+LLVM_CONFIG := $(LLVM_DIR)/bin/llvm-config
+LLVM_CXXFLAGS := $(shell $(LLVM_CONFIG) --cxxflags)
+LLVM_LDFLAGS := $(shell $(LLVM_CONFIG) --ldflags --system-libs --libs all)
+
 # Compiler and flags
 CXX := g++
-CXXFLAGS := -std=c++17 -fPIC -D__STDC_FORMAT_MACROS -Wall
+CXXFLAGS := -std=c++17 -fPIC -D__STDC_FORMAT_MACROS -Wall $(LLVM_CXXFLAGS)
 
 # Include directories
 INCLUDE_FLAGS := -I$(ERTS_INCLUDE_DIR) \
@@ -25,31 +30,10 @@ INCLUDE_FLAGS := -I$(ERTS_INCLUDE_DIR) \
                  -I/home/sean/llvm-project/llvm/include \
                  -I/home/sean/llvm-project/mlir/include
 
+# Library directories and libraries
 LDFLAGS := -L$(PRIV_DIR)/lib -Wl,-rpath,$(PRIV_DIR)/lib \
            -L$(LLVM_DIR)/lib \
-           -lMLIRAMDGPUDialect -lMLIRNVVMDialect -lMLIRNVVMToLLVMIRTranslation \
-           -lMLIRGPUToNVVMTransforms -lMLIRGPUToGPURuntimeTransforms \
-           -lMLIRGPUTransforms -lMLIRIR -lMLIRControlFlowToLLVM \
-           -lMLIRBytecodeWriter -lMLIRPass -lMLIRTransforms -lMLIRLLVMDialect \
-           -lMLIRSupport -lMLIRTargetLLVMIRExport -lMLIRMathToLLVM \
-           -lMLIRROCDLToLLVMIRTranslation -lMLIRGPUDialect -lMLIRSCFToControlFlow \
-           -lMLIRIndexToLLVM -lMLIRGPUToROCDLTransforms \
-           -lMLIRDialect -lMLIRAnalysis -lMLIRParser -lMLIRSideEffectInterfaces \
-           -lMLIRTransformUtils -lMLIRPDLToPDLInterp -lMLIRPDLInterp \
-           -lLLVMPasses -lLLVMNVPTXCodeGen -lLLVMAMDGPUCodeGen -lLLVMAMDGPUAsmParser \
-           -lLLVMCore -lLLVMSupport -lLLVMOption -lLLVMMC \
-           -lLLVMBitReader -lLLVMBitWriter -lLLVMTransformUtils \
-           -lLLVMAnalysis -lLLVMTarget -lLLVMObject -lLLVMCodeGen
-
-# Add architecture-specific LLVM libraries
-UNAME_M := $(shell uname -m)
-ifeq ($(UNAME_M),aarch64)
-    LDFLAGS += -lLLVMAArch64CodeGen -lLLVMAArch64AsmParser
-else ifeq ($(UNAME_M),x86_64)
-    LDFLAGS += -lLLVMX86CodeGen -lLLVMX86AsmParser
-else ifeq ($(UNAME_M),ppc64le)
-    LDFLAGS += -lLLVMPowerPCAsmParser -lLLVMPowerPCCodeGen
-endif
+           $(LLVM_LDFLAGS)
 
 .PHONY: all clean triton fetch build install install_headers deep-clean
 
