@@ -1,42 +1,67 @@
-# Makefile for building Triton library
+# Makefile for building Triton library with LLVM
+
 # Configuration
 TRITON_REPO := https://github.com/triton-lang/triton.git
 TRITON_COMMIT := 94141657e5997a71f65f5cf83a0a5277c02f4046
 CACHE_DIR := $(HOME)/.cache/triton-build
 BUILD_DIR := $(CACHE_DIR)/build
-
 PRIV_DIR = $(MIX_APP_PATH)/priv
-
 LLVM_DIR = /home/sean/llvm-project/build/
+
 # Commands
 CMAKE := cmake
 MAKE := make
 GIT := git
-.PHONY: all clean triton fetch build install install_headers
 
-LDFLAGS = -L$(PRIV_DIR)/lib -Wl,-rpath,$(PRIV_DIR)/lib -ltriton -shared
-CFLAGS = -fPIC \
-	-I$(ERTS_INCLUDE_DIR) \
-	-I$(PRIV_DIR)/include \
-	-I/home/sean/llvm-project/mlir/include \
-	-I$(LLVM_DIR)/include \
-	-I$(LLVM_DIR)/tools/mlir/include \
-	-I/home/sean/llvm-project/llvm/include \
-	-Wall -std=c++17
+# Compiler and flags
+CXX := g++
+CXXFLAGS := -std=c++17 -fPIC -D__STDC_FORMAT_MACROS -Wall
+
+# Include directories
+INCLUDE_FLAGS := -I$(ERTS_INCLUDE_DIR) \
+                 -I$(PRIV_DIR)/include \
+                 -I$(LLVM_DIR)/include \
+                 -I$(LLVM_DIR)/tools/mlir/include \
+                 -I/home/sean/llvm-project/llvm/include \
+                 -I/home/sean/llvm-project/mlir/include
+
+# Library directories and libraries
+LDFLAGS := -L$(PRIV_DIR)/lib -Wl,-rpath,$(PRIV_DIR)/lib \
+           -L$(LLVM_DIR)/lib \
+           -ltriton \
+           -lMLIRAMDGPUDialect -lMLIRNVVMDialect -lMLIRNVVMToLLVMIRTranslation \
+           -lMLIRGPUToNVVMTransforms -lMLIRGPUToGPURuntimeTransforms \
+           -lMLIRGPUTransforms -lMLIRIR -lMLIRControlFlowToLLVM \
+           -lMLIRBytecodeWriter -lMLIRPass -lMLIRTransforms -lMLIRLLVMDialect \
+           -lMLIRSupport -lMLIRTargetLLVMIRExport -lMLIRMathToLLVM \
+           -lMLIRROCDLToLLVMIRTranslation -lMLIRGPUDialect -lMLIRSCFToControlFlow \
+           -lMLIRIndexToLLVM -lMLIRGPUToROCDLTransforms \
+           -lLLVMPasses -lLLVMNVPTXCodeGen -lLLVMAMDGPUCodeGen -lLLVMAMDGPUAsmParser
+
+# Add architecture-specific LLVM libraries
+UNAME_M := $(shell uname -m)
+ifeq ($(UNAME_M),aarch64)
+    LDFLAGS += -lLLVMAArch64CodeGen -lLLVMAArch64AsmParser
+else ifeq ($(UNAME_M),x86_64)
+    LDFLAGS += -lLLVMX86CodeGen -lLLVMX86AsmParser
+else ifeq ($(UNAME_M),ppc64le)
+    LDFLAGS += -lLLVMPowerPCAsmParser -lLLVMPowerPCCodeGen
+endif
+
+.PHONY: all clean triton fetch build install install_headers deep-clean
 
 all: $(PRIV_DIR)/libtriton_nif.so
 
 $(PRIV_DIR)/libtriton_nif.so: triton
 	@if [ ! -f $@ ]; then \
 		echo "Compiling libtriton_nif.so..."; \
-		$(CXX) $(CFLAGS) c_src/triton.cc -o $@ $(LDFLAGS); \
+		$(CXX) $(CXXFLAGS) $(INCLUDE_FLAGS) c_src/triton.cc -o $@ $(LDFLAGS) -shared; \
 	else \
 		echo "libtriton_nif.so already exists. Skipping compilation."; \
 	fi
 
 triton: fetch build install install_headers
 
-# Fetch Triton repository
 fetch:
 	@echo "Fetching Triton repository..."
 	@mkdir -p $(CACHE_DIR)
@@ -45,7 +70,6 @@ fetch:
 	fi
 	@cd $(CACHE_DIR)/triton && $(GIT) fetch origin && $(GIT) checkout $(TRITON_COMMIT)
 
-# Build Triton library
 build: fetch
 	@echo "Building Triton library..."
 	@mkdir -p $(BUILD_DIR)
@@ -60,23 +84,19 @@ build: fetch
 		-DTRITON_CODEGEN_BACKENDS="nvidia"
 	@cd $(BUILD_DIR) && $(MAKE) -j$$(nproc)
 
-# Install (symlink) Triton library
 install: build
 	@echo "Installing Triton library..."
 	@mkdir -p $(PRIV_DIR)/lib $(PRIV_DIR)/include
 	@ln -sf $(BUILD_DIR)/lib/libtriton.so $(PRIV_DIR)/lib/
 
-# Install headers
 install_headers: build
 	@echo "Installing Triton headers..."
-	@# Install .h.inc files from build directory
 	@find $(BUILD_DIR)/include/triton -name "*.h.inc" | while read file; do \
 		rel_path=$$(echo "$$file" | sed -e "s|^$(BUILD_DIR)/include/||"); \
 		mkdir -p "$$(dirname "$(PRIV_DIR)/include/$$rel_path")"; \
 		cp "$$file" "$(PRIV_DIR)/include/$$rel_path"; \
 		echo "Installed: $$rel_path"; \
 	done
-	@# Install .h files from source directory
 	@find $(CACHE_DIR)/triton/include -name "*.h" -o -name "*.hpp" | while read file; do \
 		rel_path=$$(echo "$$file" | sed -e "s|^$(CACHE_DIR)/triton/include/||"); \
 		mkdir -p "$$(dirname "$(PRIV_DIR)/include/$$rel_path")"; \
@@ -84,14 +104,12 @@ install_headers: build
 		echo "Installed: $$rel_path"; \
 	done
 
-# Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BUILD_DIR)
 	@rm -f $(PRIV_DIR)/lib/libtriton.so
 	@rm -rf $(PRIV_DIR)/include/triton
 
-# Deep clean (including cached repository)
 deep-clean: clean
 	@echo "Performing deep clean..."
 	@rm -rf $(CACHE_DIR)
