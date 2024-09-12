@@ -4,7 +4,10 @@ TRITON_REPO := https://github.com/triton-lang/triton.git
 TRITON_COMMIT := 94141657e5997a71f65f5cf83a0a5277c02f4046
 CACHE_DIR := $(HOME)/.cache/triton-build
 BUILD_DIR := $(CACHE_DIR)/build
-INSTALL_DIR := priv
+
+PRIV_DIR = $(MIX_APP_PATH)/priv
+INSTALL_DIR = $(PRIV_DIR)
+
 LLVM_DIR = /home/sean/llvm-project/build/
 # Commands
 CMAKE := cmake
