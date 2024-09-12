@@ -22,8 +22,15 @@ CFLAGS = -fPIC \
 	-I/home/sean/llvm-project/llvm/include \
 	-Wall -std=c++17
 
-all: triton
-	$(CXX) $(CFLAGS) c_src/triton.cc -o priv/libtriton_ex.so $(LDFLAGS)
+all: $(INSTALL_DIR)/libtriton_nif.so
+
+$(INSTALL_DIR)/libtriton_nif.so: triton
+	@if [ ! -f $@ ]; then \
+		echo "Compiling libtriton_nif.so..."; \
+		$(CXX) $(CFLAGS) c_src/triton.cc -o $@ $(LDFLAGS); \
+	else \
+		echo "libtriton_nif.so already exists. Skipping compilation."; \
+	fi
 
 triton: fetch build install install_headers
 
