@@ -1,21 +1,16 @@
 # Makefile for building Triton library
-
 # Configuration
 TRITON_REPO := https://github.com/triton-lang/triton.git
 TRITON_COMMIT := 94141657e5997a71f65f5cf83a0a5277c02f4046
 CACHE_DIR := $(HOME)/.cache/triton-build
 BUILD_DIR := $(CACHE_DIR)/build
 INSTALL_DIR := priv
-
 LLVM_DIR = /home/sean/llvm-project/build/
-
 # Commands
 CMAKE := cmake
 MAKE := make
 GIT := git
-
-.PHONY: all clean triton fetch build install
-
+.PHONY: all clean triton fetch build install install_headers
 LDFLAGS = -L$(INSTALL_DIR)/lib
 CFLAGS = -fPIC -I$(ERTS_INCLUDE_DIR) \
 	-I$(INSTALL_DIR)/include \
@@ -28,7 +23,7 @@ CFLAGS = -fPIC -I$(ERTS_INCLUDE_DIR) \
 all: triton
 	$(CXX) $(CFLAGS) c_src/triton.cc -o priv/libtriton_ex.so $(LDFLAGS)
 
-triton: fetch build install
+triton: fetch build install install_headers
 
 # Fetch Triton repository
 fetch:
@@ -54,20 +49,36 @@ build: fetch
 		-DTRITON_CODEGEN_BACKENDS="nvidia"
 	@cd $(BUILD_DIR) && $(MAKE) -j$$(nproc)
 
-# Install (symlink) Triton library and includes
+# Install (symlink) Triton library
 install: build
-	@echo "Installing Triton library and includes..."
+	@echo "Installing Triton library..."
 	@mkdir -p $(INSTALL_DIR)/lib $(INSTALL_DIR)/include
 	@ln -sf $(BUILD_DIR)/lib/libtriton.so $(INSTALL_DIR)/lib/
-	@find $(BUILD_DIR)/include/triton -name "*.h.inc" -exec rsync -R {} $(INSTALL_DIR)/include/triton \;
-	@find $(CACHE_DIR)/triton/include -name "*.h" -exec rsync -R {} $(INSTALL_DIR)/include/triton \;
+
+# Install headers
+install_headers: build
+	@echo "Installing Triton headers..."
+	@# Install .h.inc files from build directory
+	@find $(BUILD_DIR)/include/triton -name "*.h.inc" | while read file; do \
+		rel_path=$$(echo "$$file" | sed -e "s|^$(BUILD_DIR)/include/triton/||" -e 's|\.inc$$||'); \
+		mkdir -p "$$(dirname "$(INSTALL_DIR)/include/$$rel_path")"; \
+		cp "$$file" "$(INSTALL_DIR)/include/$$rel_path"; \
+		echo "Installed: $$rel_path"; \
+	done
+	@# Install .h files from source directory
+	@find $(CACHE_DIR)/triton/include -name "*.h" | while read file; do \
+		rel_path=$$(echo "$$file" | sed -e "s|^$(CACHE_DIR)/triton/include/||"); \
+		mkdir -p "$$(dirname "$(INSTALL_DIR)/include/$$rel_path")"; \
+		cp "$$file" "$(INSTALL_DIR)/include/$$rel_path"; \
+		echo "Installed: $$rel_path"; \
+	done
 
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BUILD_DIR)
 	@rm -f $(INSTALL_DIR)/lib/libtriton.so
-	@rm -f $(INSTALL_DIR)/include/triton
+	@rm -rf $(INSTALL_DIR)/include/triton
 
 # Deep clean (including cached repository)
 deep-clean: clean
