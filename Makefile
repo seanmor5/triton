@@ -28,7 +28,6 @@ INCLUDE_FLAGS := -I$(ERTS_INCLUDE_DIR) \
 # Library directories and libraries
 LDFLAGS := -L$(PRIV_DIR)/lib -Wl,-rpath,$(PRIV_DIR)/lib \
            -L$(LLVM_DIR)/lib \
-           -ltriton \
            -lMLIRAMDGPUDialect -lMLIRNVVMDialect -lMLIRNVVMToLLVMIRTranslation \
            -lMLIRGPUToNVVMTransforms -lMLIRGPUToGPURuntimeTransforms \
            -lMLIRGPUTransforms -lMLIRIR -lMLIRControlFlowToLLVM \
@@ -36,7 +35,10 @@ LDFLAGS := -L$(PRIV_DIR)/lib -Wl,-rpath,$(PRIV_DIR)/lib \
            -lMLIRSupport -lMLIRTargetLLVMIRExport -lMLIRMathToLLVM \
            -lMLIRROCDLToLLVMIRTranslation -lMLIRGPUDialect -lMLIRSCFToControlFlow \
            -lMLIRIndexToLLVM -lMLIRGPUToROCDLTransforms \
-           -lLLVMPasses -lLLVMNVPTXCodeGen -lLLVMAMDGPUCodeGen -lLLVMAMDGPUAsmParser
+           -lLLVMPasses -lLLVMNVPTXCodeGen -lLLVMAMDGPUCodeGen -lLLVMAMDGPUAsmParser \
+           -lLLVMCore -lLLVMSupport -lLLVMOption -lLLVMMC \
+           -lLLVMBitReader -lLLVMBitWriter -lLLVMTransformUtils \
+           -lLLVMAnalysis -lLLVMTarget -lLLVMObject -lLLVMCodeGen
 
 # Add architecture-specific LLVM libraries
 UNAME_M := $(shell uname -m)
@@ -53,12 +55,8 @@ endif
 all: $(PRIV_DIR)/libtriton_nif.so
 
 $(PRIV_DIR)/libtriton_nif.so: triton
-	@if [ ! -f $@ ]; then \
-		echo "Compiling libtriton_nif.so..."; \
-		$(CXX) $(CXXFLAGS) $(INCLUDE_FLAGS) c_src/triton.cc -o $@ $(LDFLAGS) -shared; \
-	else \
-		echo "libtriton_nif.so already exists. Skipping compilation."; \
-	fi
+	@echo "Compiling libtriton_nif.so..."
+	$(CXX) $(CXXFLAGS) $(INCLUDE_FLAGS) c_src/triton.cc -o $@ $(LDFLAGS) -shared
 
 triton: fetch build install install_headers
 
