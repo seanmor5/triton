@@ -59,7 +59,7 @@ install: build
 install_headers: build
 	@echo "Installing Triton headers..."
 	@# Install .h.inc files from build directory
-	@find $(BUILD_DIR)/include/triton -name "*.h.inc" | while read file; do \
+	@find $(BUILD_DIR)/include -name "*.h.inc" | while read file; do \
 		rel_path=$$(echo "$$file" | sed -e "s|^$(BUILD_DIR)/include/triton/||" -e 's|\.inc$$||'); \
 		mkdir -p "$$(dirname "$(INSTALL_DIR)/include/$$rel_path")"; \
 		cp "$$file" "$(INSTALL_DIR)/include/$$rel_path"; \
