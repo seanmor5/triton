@@ -11,8 +11,10 @@ CMAKE := cmake
 MAKE := make
 GIT := git
 .PHONY: all clean triton fetch build install install_headers
-LDFLAGS = -L$(INSTALL_DIR)/lib
-CFLAGS = -fPIC -I$(ERTS_INCLUDE_DIR) \
+
+LDFLAGS = -L$(INSTALL_DIR)/lib -shared
+CFLAGS = -fPIC \
+	-I$(ERTS_INCLUDE_DIR) \
 	-I$(INSTALL_DIR)/include \
 	-I/home/sean/llvm-project/mlir/include \
 	-I$(LLVM_DIR)/include \
@@ -66,7 +68,7 @@ install_headers: build
 		echo "Installed: $$rel_path"; \
 	done
 	@# Install .h files from source directory
-	@find $(CACHE_DIR)/triton/include -name "*.h" | while read file; do \
+	@find $(CACHE_DIR)/triton/include -name "*.h" -o -name "*.hpp" | while read file; do \
 		rel_path=$$(echo "$$file" | sed -e "s|^$(CACHE_DIR)/triton/include/||"); \
 		mkdir -p "$$(dirname "$(INSTALL_DIR)/include/$$rel_path")"; \
 		cp "$$file" "$(INSTALL_DIR)/include/$$rel_path"; \

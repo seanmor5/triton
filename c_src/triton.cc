@@ -31,7 +31,6 @@
 #include "llvm/Support/SourceMgr.h"
 
 static int open_resources(ErlNifEnv* env) {
-  const char* mod = "Triton";
   return 1;
 }
 
