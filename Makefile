@@ -6,7 +6,6 @@ CACHE_DIR := $(HOME)/.cache/triton-build
 BUILD_DIR := $(CACHE_DIR)/build
 
 PRIV_DIR = $(MIX_APP_PATH)/priv
-INSTALL_DIR = $(PRIV_DIR)
 
 LLVM_DIR = /home/sean/llvm-project/build/
 # Commands
@@ -15,19 +14,19 @@ MAKE := make
 GIT := git
 .PHONY: all clean triton fetch build install install_headers
 
-LDFLAGS = -L$(INSTALL_DIR)/lib -ltriton -shared
+LDFLAGS = -L$(PRIV_DIR)/lib -ltriton -shared
 CFLAGS = -fPIC \
 	-I$(ERTS_INCLUDE_DIR) \
-	-I$(INSTALL_DIR)/include \
+	-I$(PRIV_DIR)/include \
 	-I/home/sean/llvm-project/mlir/include \
 	-I$(LLVM_DIR)/include \
 	-I$(LLVM_DIR)/tools/mlir/include \
 	-I/home/sean/llvm-project/llvm/include \
 	-Wall -std=c++17
 
-all: $(INSTALL_DIR)/libtriton_nif.so
+all: $(PRIV_DIR)/libtriton_nif.so
 
-$(INSTALL_DIR)/libtriton_nif.so: triton
+$(PRIV_DIR)/libtriton_nif.so: triton
 	@if [ ! -f $@ ]; then \
 		echo "Compiling libtriton_nif.so..."; \
 		$(CXX) $(CFLAGS) c_src/triton.cc -o $@ $(LDFLAGS); \
@@ -64,8 +63,8 @@ build: fetch
 # Install (symlink) Triton library
 install: build
 	@echo "Installing Triton library..."
-	@mkdir -p $(INSTALL_DIR)/lib $(INSTALL_DIR)/include
-	@ln -sf $(BUILD_DIR)/lib/libtriton.so $(INSTALL_DIR)/lib/
+	@mkdir -p $(PRIV_DIR)/lib $(PRIV_DIR)/include
+	@ln -sf $(BUILD_DIR)/lib/libtriton.so $(PRIV_DIR)/lib/
 
 # Install headers
 install_headers: build
@@ -73,15 +72,15 @@ install_headers: build
 	@# Install .h.inc files from build directory
 	@find $(BUILD_DIR)/include/triton -name "*.h.inc" | while read file; do \
 		rel_path=$$(echo "$$file" | sed -e "s|^$(BUILD_DIR)/include/||"); \
-		mkdir -p "$$(dirname "$(INSTALL_DIR)/include/$$rel_path")"; \
-		cp "$$file" "$(INSTALL_DIR)/include/$$rel_path"; \
+		mkdir -p "$$(dirname "$(PRIV_DIR)/include/$$rel_path")"; \
+		cp "$$file" "$(PRIV_DIR)/include/$$rel_path"; \
 		echo "Installed: $$rel_path"; \
 	done
 	@# Install .h files from source directory
 	@find $(CACHE_DIR)/triton/include -name "*.h" -o -name "*.hpp" | while read file; do \
 		rel_path=$$(echo "$$file" | sed -e "s|^$(CACHE_DIR)/triton/include/||"); \
-		mkdir -p "$$(dirname "$(INSTALL_DIR)/include/$$rel_path")"; \
-		cp "$$file" "$(INSTALL_DIR)/include/$$rel_path"; \
+		mkdir -p "$$(dirname "$(PRIV_DIR)/include/$$rel_path")"; \
+		cp "$$file" "$(PRIV_DIR)/include/$$rel_path"; \
 		echo "Installed: $$rel_path"; \
 	done
 
@@ -89,8 +88,8 @@ install_headers: build
 clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BUILD_DIR)
-	@rm -f $(INSTALL_DIR)/lib/libtriton.so
-	@rm -rf $(INSTALL_DIR)/include/triton
+	@rm -f $(PRIV_DIR)/lib/libtriton.so
+	@rm -rf $(PRIV_DIR)/include/triton
 
 # Deep clean (including cached repository)
 deep-clean: clean
