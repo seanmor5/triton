@@ -15,7 +15,7 @@ MAKE := make
 GIT := git
 .PHONY: all clean triton fetch build install install_headers
 
-LDFLAGS = -L$(INSTALL_DIR)/lib -shared
+LDFLAGS = -L$(INSTALL_DIR)/lib -ltriton -shared
 CFLAGS = -fPIC \
 	-I$(ERTS_INCLUDE_DIR) \
 	-I$(INSTALL_DIR)/include \
