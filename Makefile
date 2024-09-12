@@ -25,7 +25,6 @@ INCLUDE_FLAGS := -I$(ERTS_INCLUDE_DIR) \
                  -I/home/sean/llvm-project/llvm/include \
                  -I/home/sean/llvm-project/mlir/include
 
-# Library directories and libraries
 LDFLAGS := -L$(PRIV_DIR)/lib -Wl,-rpath,$(PRIV_DIR)/lib \
            -L$(LLVM_DIR)/lib \
            -lMLIRAMDGPUDialect -lMLIRNVVMDialect -lMLIRNVVMToLLVMIRTranslation \
@@ -35,6 +34,8 @@ LDFLAGS := -L$(PRIV_DIR)/lib -Wl,-rpath,$(PRIV_DIR)/lib \
            -lMLIRSupport -lMLIRTargetLLVMIRExport -lMLIRMathToLLVM \
            -lMLIRROCDLToLLVMIRTranslation -lMLIRGPUDialect -lMLIRSCFToControlFlow \
            -lMLIRIndexToLLVM -lMLIRGPUToROCDLTransforms \
+           -lMLIRDialect -lMLIRAnalysis -lMLIRParser -lMLIRSideEffectInterfaces \
+           -lMLIRTransformUtils -lMLIRPDLToPDLInterp -lMLIRPDLInterp \
            -lLLVMPasses -lLLVMNVPTXCodeGen -lLLVMAMDGPUCodeGen -lLLVMAMDGPUAsmParser \
            -lLLVMCore -lLLVMSupport -lLLVMOption -lLLVMMC \
            -lLLVMBitReader -lLLVMBitWriter -lLLVMTransformUtils \
