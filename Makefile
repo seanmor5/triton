@@ -16,27 +16,31 @@ GIT := git
 # LLVM and MLIR configuration
 LLVM_CONFIG := $(LLVM_DIR)/bin/llvm-config
 LLVM_CXXFLAGS := $(shell $(LLVM_CONFIG) --cxxflags)
-LLVM_LDFLAGS := $(shell $(LLVM_CONFIG) --ldflags --system-libs --libs all)
+LLVM_LDFLAGS := $(shell $(LLVM_CONFIG) --ldflags --system-libs)
 
-# MLIR specific flags and libs
-MLIR_INCLUDE := -I$(LLVM_DIR)/tools/mlir/include
-MLIR_LIBS := -lMLIRAnalysis -lMLIRDialect -lMLIRPass -lMLIRTransforms -lMLIRIR -lMLIRSupport
+# LLVM libraries
+LLVM_LIBS := $(shell $(LLVM_CONFIG) --libs core support bitreader bitwriter passes target)
+LLVM_LIBS += -lLLVMCommandLine
+
+# MLIR libraries and includes
+MLIR_INCLUDE := -I$(LLVM_DIR)/include
+MLIR_LIBS := -lMLIRAnalysis -lMLIRDialect -lMLIRPass -lMLIRTransforms -lMLIRParser \
+             -lMLIRIR -lMLIRSupport -lMLIRExecutionEngine -lMLIRLLVMIR -lMLIRLLVMToLLVMIRTranslation
 
 # Compiler and flags
 CXX := g++
-CXXFLAGS := -std=c++17 -fPIC -D__STDC_FORMAT_MACROS -Wall $(LLVM_CXXFLAGS) $(MLIR_INCLUDE)
+CXXFLAGS := -std=c++17 -fPIC -D__STDC_FORMAT_MACROS -fvisibility=hidden -Wall $(LLVM_CXXFLAGS) $(MLIR_INCLUDE)
 
 # Include directories
 INCLUDE_FLAGS := -I$(ERTS_INCLUDE_DIR) \
                  -I$(PRIV_DIR)/include \
-                 -I$(LLVM_DIR)/include \
-                 -I/home/sean/llvm-project/llvm/include \
-                 -I/home/sean/llvm-project/mlir/include
+                 -I$(LLVM_DIR)/include
 
 # Library directories and libraries
 LDFLAGS := -L$(PRIV_DIR)/lib -Wl,-rpath,$(PRIV_DIR)/lib \
            -L$(LLVM_DIR)/lib \
            $(LLVM_LDFLAGS) \
+           $(LLVM_LIBS) \
            $(MLIR_LIBS)
 
 .PHONY: all clean triton fetch build install install_headers deep-clean
