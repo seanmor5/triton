@@ -9,4 +9,5 @@ defmodule Triton.NIF do
 
   def create_llvm_thread_pool(_concurrency), do: :erlang.nif_error(:undef)
   def create_mlir_context(_thread_pool), do: :erlang.nif_error(:undef)
+  def create_triton_op_builder(_context), do: :erlang.nif_error(:undef)
 end

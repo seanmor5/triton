@@ -1,4 +1,5 @@
 #include "triton_nif_util.h"
+#include "triton_op_builder.h"
 
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -37,8 +38,10 @@ static int open_resources(ErlNifEnv* env) {
   if (!nif::open_resource<mlir::MLIRContext*>(env, mod, "MLIRContext")) {
     return -1;
   }
-
   if (!nif::open_resource<llvm::StdThreadPool*>(env, mod, "TheadPool")) {
+    return -1;
+  }
+  if (!nif::open_resource<TritonOpBuilder*>(env, mod, "TritonOpBuilder")) {
     return -1;
   }
 
@@ -107,9 +110,25 @@ ERL_NIF_TERM create_mlir_context(ErlNifEnv * env, int argc, const ERL_NIF_TERM a
   return nif::ok(env, nif::make<mlir::MLIRContext*>(env, context));
 }
 
+ERL_NIF_TERM create_triton_op_builder(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 1) {
+    return nif::error(env, "Unable to get Triton op builder.");
+  }
+
+  mlir::MLIRContext** context;
+
+  if (nif::get<mlir::MLIRContext*>(env, argv[0], context)) {
+    return nif::error(env, "Unable to get MLIR context.");
+  }
+
+  auto builder = new TritonOpBuilder(*context);
+  return nif::ok(env, nif::make<TritonOpBuilder*>(env, builder));
+}
+
 static ErlNifFunc triton_funcs[] = {
   {"create_llvm_thread_pool", 1, create_llvm_thread_pool},
-  {"create_mlir_context", 1, create_mlir_context}
+  {"create_mlir_context", 1, create_mlir_context},
+  {"create_triton_op_builder", 1, create_triton_op_builder}
 };
 
 ERL_NIF_INIT(Elixir.Triton.NIF, triton_funcs, &load, NULL, &upgrade, NULL);

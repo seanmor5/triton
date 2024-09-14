@@ -1,5 +1,5 @@
-#ifndef EXLA_NIF_UTIL_H_
-#define EXLA_NIF_UTIL_H_
+#ifndef TRITON_NIF_UTIL_H_
+#define TRTION_NIF_UTIL_H_
 
 #include "erl_nif.h"
 
