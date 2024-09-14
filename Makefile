@@ -19,6 +19,8 @@ fetch:
 		$(GIT) clone $(TRITON_REPO) $(CACHE_DIR)/triton; \
 	fi
 	@cp triton_build.patch $(CACHE_DIR)/triton
+	@mkdir -p $(CACHE_DIR)/triton/elixir
+	@cp c_src/* $(CACHE_DIR)/triton/elixir
 	@cd $(CACHE_DIR)/triton && $(GIT) fetch origin && $(GIT) checkout $(TRITON_COMMIT) && $(GIT) apply triton_build.patch
 
 build:
