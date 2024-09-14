@@ -8,7 +8,7 @@ defmodule Triton.MLIR.Value do
 
     ref =
       builder_ref
-      |> Triton.NIF.get_int1(builder_ref, bool_int)
+      |> Triton.NIF.get_int1(bool_int)
       |> unwrap!()
 
     struct(__MODULE__, ref: ref, builder: builder)
