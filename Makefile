@@ -13,20 +13,9 @@ CMAKE := cmake
 MAKE := make
 GIT := git
 
-# LLVM and MLIR configuration
-LLVM_CONFIG := $(LLVM_DIR)/bin/llvm-config
-LLVM_CXXFLAGS := $(shell $(LLVM_CONFIG) --cxxflags)
-LLVM_LDFLAGS := $(shell $(LLVM_CONFIG) --ldflags) $(shell $(LLVM_CONFIG) --system-libs --libs all)
-
-# MLIR libraries and includes
-MLIR_INCLUDE := -I$(LLVM_DIR)/include
-MLIR_LIBS := -lMLIRAnalysis -lMLIRDialect -lMLIRPass -lMLIRTransforms -lMLIRParser \
-             -lMLIRIR -lMLIRSupport -lMLIRExecutionEngine -lMLIRLLVMToLLVMIRTranslation \
-             -lMLIRLLVMDialect
-
 # Compiler and flags
 CXX := g++
-CXXFLAGS := -std=c++17 -fPIC -D__STDC_FORMAT_MACROS -fvisibility=hidden -Wall $(LLVM_CXXFLAGS) $(MLIR_INCLUDE)
+CXXFLAGS := -std=c++17 -fPIC -Wall
 
 # Include directories
 INCLUDE_FLAGS := -I$(ERTS_INCLUDE_DIR) \
@@ -37,12 +26,7 @@ INCLUDE_FLAGS := -I$(ERTS_INCLUDE_DIR) \
                  -I/home/sean/llvm-project/mlir/include
 
 # Library directories and libraries
-LDFLAGS := -L$(PRIV_DIR)/lib -Wl,-rpath,$(PRIV_DIR)/lib \
-           -L$(LLVM_DIR)/lib \
-           -L$(LLVM_DIR)/tools/mlir/lib \
-           -L$(LLVM_DIR)/tools \
-           $(MLIR_LIBS) \
-           $(LLVM_LDFLAGS)
+LDFLAGS := -L$(PRIV_DIR)/lib -Wl,-rpath,$(PRIV_DIR)/lib -ltriton
 
 .PHONY: all clean triton fetch build install install_headers deep-clean
 
@@ -81,7 +65,7 @@ build: fetch
 install: build
 	@echo "Installing Triton library..."
 	@mkdir -p $(PRIV_DIR)/lib $(PRIV_DIR)/include
-	@ln -sf $(BUILD_DIR)/lib $(PRIV_DIR)/lib
+	@ln -sf $(BUILD_DIR)/libtriton.so $(PRIV_DIR)/lib/libtriton.so
 
 install_headers: build
 	@echo "Installing Triton headers..."
