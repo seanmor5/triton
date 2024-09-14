@@ -8,35 +8,9 @@ BUILD_DIR := $(CACHE_DIR)/build
 PRIV_DIR = $(MIX_APP_PATH)/priv
 LLVM_DIR = /home/sean/llvm-project/build/
 
-# Commands
-CMAKE := cmake
-MAKE := make
-GIT := git
+.PHONY: all fetch build install clean deep-clean
 
-# Compiler and flags
-CXX := g++
-CXXFLAGS := -std=c++17 -fPIC -Wall
-
-# Include directories
-INCLUDE_FLAGS := -I$(ERTS_INCLUDE_DIR) \
-                 -I$(PRIV_DIR)/include \
-                 -I$(LLVM_DIR)/include \
-                 -I$(LLVM_DIR)/tools/mlir/include \
-                 -I/home/sean/llvm-project/llvm/include \
-                 -I/home/sean/llvm-project/mlir/include
-
-# Library directories and libraries
-LDFLAGS := -L$(PRIV_DIR)/lib -Wl,-rpath,$(PRIV_DIR)/lib -ltriton
-
-.PHONY: all clean triton fetch build install install_headers deep-clean
-
-all: $(PRIV_DIR)/libtriton_nif.so
-
-$(PRIV_DIR)/libtriton_nif.so: triton
-	@echo "Compiling libtriton_nif.so..."
-	$(CXX) $(CXXFLAGS) $(INCLUDE_FLAGS) c_src/triton.cc c_src/triton_nif_util.cc c_src/triton_nif_util.h -o $@ $(LDFLAGS) -shared
-
-triton: build install install_headers
+all: fetch build install
 
 fetch:
 	@echo "Fetching Triton repository..."
@@ -47,12 +21,13 @@ fetch:
 	@cp triton_build.patch $(CACHE_DIR)/triton
 	@cd $(CACHE_DIR)/triton && $(GIT) fetch origin && $(GIT) checkout $(TRITON_COMMIT) && $(GIT) apply triton_build.patch
 
-build: fetch
+build:
 	@echo "Building Triton library..."
 	@mkdir -p $(BUILD_DIR)
 	@cd $(BUILD_DIR) && $(CMAKE) $(CACHE_DIR)/triton \
 		-DCMAKE_BUILD_TYPE=Release \
-		-DTRITON_BUILD_SHARED_OBJECT=ON \
+		-DTRITON_BUILD_ELIXIR_MODULE=ON \
+		-DERTS_INCLUDE_PATH=$(ERTS_INCLUDE_PATH) \
 		-DTRITON_BUILD_PYTHON_MODULE=OFF \
 		-DTRITON_BUILD_TUTORIALS=OFF \
 		-DTRITON_BUILD_PROTON=OFF \
@@ -64,29 +39,12 @@ build: fetch
 
 install: build
 	@echo "Installing Triton library..."
-	@mkdir -p $(PRIV_DIR)/lib $(PRIV_DIR)/include
-	@ln -sf $(BUILD_DIR)/libtriton.so $(PRIV_DIR)/lib/libtriton.so
-
-install_headers: build
-	@echo "Installing Triton headers..."
-	@find $(BUILD_DIR)/include/triton -name "*.h.inc" | while read file; do \
-		rel_path=$$(echo "$$file" | sed -e "s|^$(BUILD_DIR)/include/||"); \
-		mkdir -p "$$(dirname "$(PRIV_DIR)/include/$$rel_path")"; \
-		cp "$$file" "$(PRIV_DIR)/include/$$rel_path"; \
-		echo "Installed: $$rel_path"; \
-	done
-	@find $(CACHE_DIR)/triton/include -name "*.h" -o -name "*.hpp" | while read file; do \
-		rel_path=$$(echo "$$file" | sed -e "s|^$(CACHE_DIR)/triton/include/||"); \
-		mkdir -p "$$(dirname "$(PRIV_DIR)/include/$$rel_path")"; \
-		cp "$$file" "$(PRIV_DIR)/include/$$rel_path"; \
-		echo "Installed: $$rel_path"; \
-	done
+	@ln -sf $(BUILD_DIR)/libtriton.so $(PRIV_DIR)/libtriton_nif.so
 
 clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BUILD_DIR)
-	@rm -ff $(PRIV_DIR)/lib/*
-	@rm -rf $(PRIV_DIR)/include/triton
+	@rm -f $(PRIV_DIR)/*
 
 deep-clean: clean
 	@echo "Performing deep clean..."
