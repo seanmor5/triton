@@ -21,7 +21,7 @@ defmodule Triton.MLIR.ContextPool do
 
   @impl NimblePool
   def init_worker(%{thread_pool: thread_pool} = pool_state) do
-    {:ok, context} = Triton.NIF.create_new_context(thread_pool)
+    {:ok, context} = Triton.NIF.create_mlir_context(thread_pool)
     {:ok, context, pool_state}
   end
 
