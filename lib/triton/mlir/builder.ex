@@ -1,17 +1,17 @@
 defmodule Triton.MLIR.Builder do
-  defstruct [:ref]
+  defstruct [:ref, :context]
 
   alias Triton.MLIR.ContextPool
 
   def new do
-    ref =
-      ContextPool.checkout(fn context ->
+    ContextPool.checkout(fn context ->
+      ref =
         context
         |> Triton.NIF.create_triton_op_builder()
         |> unwrap!()
-      end)
 
-    struct(__MODULE__, ref: ref)
+      struct(__MODULE__, ref: ref, context: context)
+    end)
   end
 
   defp unwrap!({:ok, ref}), do: ref

@@ -1,4 +1,6 @@
 defmodule Triton.Application do
+  @moduledoc false
+
   def start(_args, _type) do
     pool_size = System.schedulers_online()
 
