@@ -27,10 +27,9 @@ fetch:
 	@cd $(CACHE_DIR)/triton && $(GIT) fetch origin && $(GIT) checkout $(TRITON_COMMIT) && $(GIT) apply triton_build.patch
 
 build:
-	echo "Building Triton library..."
-	mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR)
-	$(CMAKE) $(CACHE_DIR)/triton \
+	@echo "Building Triton library..."
+	@mkdir -p $(BUILD_DIR)
+	@cd $(BUILD_DIR) && $(CMAKE) $(CACHE_DIR)/triton \
 		-DCMAKE_BUILD_TYPE=Release \
 		-DERTS_INCLUDE_DIR=$(ERTS_INCLUDE_DIR) \
 		-DTRITON_BUILD_ELIXIR_MODULE=ON \
@@ -41,7 +40,7 @@ build:
 		-DLLVM_DIR=$(LLVM_DIR)/lib/cmake/llvm \
 		-DMLIR_DIR=$(LLVM_DIR)/lib/cmake/mlir \
 		-DTRITON_CODEGEN_BACKENDS="nvidia"
-	cd $(BUILD_DIR) && $(MAKE) -j$$(nproc)
+	@cd $(BUILD_DIR) && $(MAKE) -j$$(nproc)
 
 install: build
 	@echo "Installing Triton library..."
