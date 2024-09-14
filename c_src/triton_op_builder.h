@@ -36,6 +36,8 @@ public:
 
   mlir::OpBuilder &getBuilder() { return *builder; }
 
+  bool isLineInfoEnabled() { return lineInfoEnabled; }
+
   mlir::Location getLastLoc() {
     assert(lastLoc);
     return *lastLoc;
@@ -62,6 +64,8 @@ public:
     return builder->createOrFold<OpTy>(loc, std::forward<Args>(args)...);
   }
 
+  void setLastLoc(mlir::Location loc);
+  void setLastLoc(const std::string &fileName, int line, int column);
   void setInsertionPointToStart(mlir::Block &block);
   void setInsertionPointToEnd(mlir::Block &block);
   void setInsertionPointAfter(mlir::Operation &op);
@@ -70,5 +74,6 @@ public:
 private:
   std::unique_ptr<mlir::OpBuilder> builder;
   std::unique_ptr<mlir::Location> lastLoc;
+  bool lineInfoEnabled = true;
 }
 #endif

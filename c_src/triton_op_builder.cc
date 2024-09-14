@@ -6,6 +6,16 @@ TritonOpBuilder::TritonOpBuilder(mlir::MLIRContext *context) {
   lastLoc = std::make_unique<mlir::Location>(builder->getUnknownLoc());
 }
 
+void TritonOpBuilder::setLastLoc(mlir::Location loc) {
+  if (lineInfoEnabled)
+    lastLoc = std::make_unique<mlir::Location>(loc);
+}
+
+void TritonOpBuilder::setLastLoc(const std::string &fileName, int line, int column) {
+  auto context = builder->getContext();
+  setLastLoc(mlir::FileLineColLoc::get(context, fileName, line, column));
+}
+
 void TritonOpBuilder::setInsertionPointToStart(mlir::Block &block) {
   if (!block.empty())
     setLastLoc(block.begin()->getLoc());
