@@ -85,7 +85,7 @@ defmodule Triton.Language do
     Expr.new(:ravel, [x])
   end
 
-  def reshape(%Expr{} = input, shape) when is_tuple(shape) do
+  def reshape(%Expr{} = input, shape, opts \\ []) when is_tuple(shape) do
     opts = Keyword.validate!(opts, can_reorder: false)
     Expr.new(:reshape, [input], [{:shape, shape} | opts])
   end
@@ -248,6 +248,4 @@ defmodule Triton.Language do
   defp power_of_two?(x) do
     (x &&& x - 1) == 0
   end
-
-  defp normalize_type(type), do: :todo
 end
