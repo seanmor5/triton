@@ -117,7 +117,7 @@ ERL_NIF_TERM create_triton_op_builder(ErlNifEnv * env, int argc, const ERL_NIF_T
 
   mlir::MLIRContext** context;
 
-  if (nif::get<mlir::MLIRContext*>(env, argv[0], context)) {
+  if (!nif::get<mlir::MLIRContext*>(env, argv[0], context)) {
     return nif::error(env, "Unable to get MLIR context.");
   }
 
