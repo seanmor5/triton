@@ -15,5 +15,5 @@ defmodule Triton.MLIR.Builder do
   end
 
   defp unwrap!({:ok, ref}), do: ref
-  defp unrap!({:error, reason}), do: raise("#{reason}")
+  defp unwrap!({:error, reason}), do: raise("#{reason}")
 end
