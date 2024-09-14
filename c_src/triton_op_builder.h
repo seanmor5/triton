@@ -29,7 +29,6 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
-#include "triton/Tools/Sys/GetEnv.hpp"
 
 class TritonOpBuilder {
 public:
@@ -65,9 +64,16 @@ public:
     return builder->createOrFold<OpTy>(loc, std::forward<Args>(args)...);
   }
 
+  void setLastLoc(mlir::Location loc);
+  void setLastLoc(const std::string &fileName, int line, int column);
+  void setInsertionPointToStart(mlir::Block &block);
+  void setInsertionPointToEnd(mlir::Block &block);
+  void setInsertionPointAfter(mlir::Operation &op);
+  void restoreInsertionPoint(mlir::OpBuilder::InsertPoint pt);
+
 private:
   std::unique_ptr<mlir::OpBuilder> builder;
   std::unique_ptr<mlir::Location> lastLoc;
-  bool lineInfoEnabled = !triton::tools::getBoolEnv("TRITON_DISABLE_LINE_INFO");
+  // bool lineInfoEnabled = !triton::tools::getBoolEnv("TRITON_DISABLE_LINE_INFO");
 }
 #endif
