@@ -57,17 +57,17 @@ static int upgrade(ErlNifEnv * env, void ** priv_data, void* * old_priv_data, ER
 
 ERL_NIF_TERM create_mlir_context(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
   if (argc != 0) {
-    return exla::nif::error(env, "Bad argument count.");
+    return nif::error(env, "Bad argument count.");
   }
 
   mlir::MLIRContext* context = new mlir::MLIRContext(mlir::MLIRContext::Threading::DISABLED);
 
   mlir::DialectRegistry registry;
-  registry.insert<triton::TritonDialect, mlir::triton::gpu::TritonGPUDialect,
-                math::MathDialect, arith::ArithDialect, index::IndexDialect,
-                scf::SCFDialect, mlir::gpu::GPUDialect,
-                cf::ControlFlowDialect, LLVM::LLVMDialect>();
-  mlir::LLVM::registerInlinerInterface(registry)
+  registry.insert<mlir::triton::TritonDialect, mlir::triton::gpu::TritonGPUDialect,
+                mlir::math::MathDialect, mlir::arith::ArithDialect, mlir::index::IndexDialect,
+                mlir::scf::SCFDialect, mlir::gpu::GPUDialect,
+                mlir::cf::ControlFlowDialect, mlir::LLVM::LLVMDialect>();
+  mlir::LLVM::registerInlinerInterface(registry);
   mlir::registerBuiltinDialectTranslation(registry);
   mlir::registerLLVMDialectTranslation(registry);
 

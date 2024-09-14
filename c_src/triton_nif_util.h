@@ -2,6 +2,7 @@
 #define EXLA_NIF_UTIL_H_
 
 #include <memory>
+#include "erl_nif.h"
 
 namespace nif {
 // Helper for returning `{:error, msg}` from NIF.

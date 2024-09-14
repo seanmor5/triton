@@ -7,5 +7,5 @@ defmodule Triton.NIF do
     :erlang.load_nif(path, 0)
   end
 
-  def ok, do: :erlang.nif_error(:undef)
+  def create_mlir_context, do: :erlang.nif_error(:undef)
 end
