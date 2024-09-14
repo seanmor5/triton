@@ -36,11 +36,9 @@ $(PRIV_DIR)/libtriton_nif.so: triton
 	@echo "Compiling libtriton_nif.so..."
 	$(CXX) $(CXXFLAGS) $(INCLUDE_FLAGS) c_src/triton.cc c_src/triton_nif_util.cc c_src/triton_nif_util.h -o $@ $(LDFLAGS) -shared
 
-triton: fetch build install install_headers
+triton: build install install_headers
 
-fetch: $(FETCH_MARKER)
-
-$(FETCH_MARKER):
+fetch:
 	@echo "Fetching Triton repository..."
 	@mkdir -p $(CACHE_DIR)
 	@if [ ! -d $(CACHE_DIR)/triton ]; then \
@@ -48,9 +46,8 @@ $(FETCH_MARKER):
 	fi
 	@cp triton_build.patch $(CACHE_DIR)/triton
 	@cd $(CACHE_DIR)/triton && $(GIT) fetch origin && $(GIT) checkout $(TRITON_COMMIT) && $(GIT) apply triton_build.patch
-	@touch $(FETCH_MARKER)
 
-build: | $(FETCH_MARKER)
+build: fetch
 	@echo "Building Triton library..."
 	@mkdir -p $(BUILD_DIR)
 	@cd $(BUILD_DIR) && $(CMAKE) $(CACHE_DIR)/triton \
