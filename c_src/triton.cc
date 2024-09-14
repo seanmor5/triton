@@ -35,10 +35,13 @@
 static int open_resources(ErlNifEnv* env) {
   const char * mod = "Triton";
 
-  if (!nif::open_resource<mlir::MLIRContext*>(env, mod, "MLIRContext")) {
+  if (!nif::open_resource<mlir::MLIRContext*>(env, mod, "mlir::MLIRContext")) {
     return -1;
   }
-  if (!nif::open_resource<llvm::StdThreadPool*>(env, mod, "TheadPool")) {
+  if (!nif::open_resource<mlir::Value>(env, mod, "mlir::Value")) {
+    return -1;
+  }
+  if (!nif::open_resource<llvm::StdThreadPool*>(env, mod, "llvm::StdTheadPool")) {
     return -1;
   }
   if (!nif::open_resource<TritonOpBuilder*>(env, mod, "TritonOpBuilder")) {
@@ -125,10 +128,33 @@ ERL_NIF_TERM create_triton_op_builder(ErlNifEnv * env, int argc, const ERL_NIF_T
   return nif::ok(env, nif::make<TritonOpBuilder*>(env, builder));
 }
 
+// Ops
+
+ERL_NIF_TERM get_int1(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 2) {
+    return nif::error(env, "Bad argument count.");
+  }
+
+  TritonOpBuilder** builder;
+  bool v;
+
+  if (!nif::get<TritonOpBuilder*>(env, argv[0], builder)) {
+    return nif::error(env, "Unable to get builder.");
+  }
+  if (!nif::get(env, argv[1], &v)) {
+    return nif::error(env, "Unable to get constant.");
+  }
+
+  auto ret = (*builder)->create<mlir::arith::ConstantIntOp>(v, (*builder)->getBuilder()->getI1Type());
+  return nif::ok(env, nif::make<mlir::Value>(env, ret));
+}
+
 static ErlNifFunc triton_funcs[] = {
   {"create_llvm_thread_pool", 1, create_llvm_thread_pool},
   {"create_mlir_context", 1, create_mlir_context},
-  {"create_triton_op_builder", 1, create_triton_op_builder}
+  {"create_triton_op_builder", 1, create_triton_op_builder},
+  // Ops
+  {"get_int1", 2, get_int1}
 };
 
 ERL_NIF_INIT(Elixir.Triton.NIF, triton_funcs, &load, NULL, &upgrade, NULL);

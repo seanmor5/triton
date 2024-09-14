@@ -17,6 +17,13 @@ ERL_NIF_TERM ok(ErlNifEnv* env) {
 }
 
 
+int get(ErlNifEnv* env, ERL_NIF_TERM term, bool* var) {
+  int value;
+  if (!enif_get_int(env, term, &value)) return 0;
+  *var = static_cast<bool>(value);
+  return 1;
+}
+
 int get(ErlNifEnv* env, ERL_NIF_TERM term, int* var) {
   return enif_get_int(env, term, reinterpret_cast<int*>(var));
 }

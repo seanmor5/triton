@@ -17,6 +17,8 @@ ERL_NIF_TERM ok(ErlNifEnv* env);
 
 int get(ErlNifEnv* env, ERL_NIF_TERM term, int* var);
 
+int get(ErlNifEnv* env, ERL_NIF_TERM term, bool* var);
+
   // Template struct for resources. The struct lets us use templates
 // to store and retrieve open resources later on. This implementation
 // is the same as the approach taken in the goertzenator/nifpp
