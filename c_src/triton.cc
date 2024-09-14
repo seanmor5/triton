@@ -145,7 +145,7 @@ ERL_NIF_TERM get_int1(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
     return nif::error(env, "Unable to get constant.");
   }
 
-  auto ret = (*builder)->create<mlir::arith::ConstantIntOp>(v, (*builder)->getBuilder()->getI1Type());
+  auto ret = (*builder)->create<mlir::arith::ConstantIntOp>(v, (*builder)->getBuilder().getI1Type());
   return nif::ok(env, nif::make<mlir::Value>(env, ret));
 }
 
