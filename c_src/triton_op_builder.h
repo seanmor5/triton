@@ -51,7 +51,7 @@ public:
 
   // Overload to create or fold a single result operation.
   template <typename OpTy, typename... Args>
-  std::enable_if_t<OpTy::template hasTrait<OpTrait::OneResult>(), Value>
+  std::enable_if_t<OpTy::template hasTrait<mlir::OpTrait::OneResult>(), mlir::Value>
   createOrFold(Args &&...args) {
     auto loc = getLastLoc();
     return builder->createOrFold<OpTy>(loc, std::forward<Args>(args)...);
@@ -59,7 +59,7 @@ public:
 
   // Overload to create or fold a zero result operation.
   template <typename OpTy, typename... Args>
-  std::enable_if_t<OpTy::template hasTrait<OpTrait::ZeroResults>(), OpTy>
+  std::enable_if_t<OpTy::template hasTrait<mlir::OpTrait::ZeroResults>(), OpTy>
   createOrFold(Args &&...args) {
     auto loc = getLastLoc();
     return builder->createOrFold<OpTy>(loc, std::forward<Args>(args)...);
