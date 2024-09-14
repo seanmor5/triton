@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index ca0a4f7f7..41db832ed 100644
+index ca0a4f7f7..932672924 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -24,6 +24,7 @@ endif()
@@ -69,7 +69,6 @@ index ca0a4f7f7..41db832ed 100644
 +    MLIRSCFToControlFlow
 +    MLIRIndexToLLVM
 +    MLIRGPUToROCDLTransforms
-+    MLIRIndexDialect
 +
 +    # LLVM
 +    LLVMPasses
@@ -115,18 +114,19 @@ index ca0a4f7f7..41db832ed 100644
 +
 +  # Link triton with its dependencies
 +  target_link_libraries(triton PUBLIC ${TRITON_LIBRARIES})
++
 +  if(WIN32)
-+    target_link_libraries(triton PRIVATE ${CMAKE_DL_LIBS})
++    target_link_libraries(triton PUBLIC ${CMAKE_DL_LIBS})
 +  else()
-+    target_link_libraries(triton PRIVATE z)
++    target_link_libraries(triton PUBLIC z)
 +  endif()
-+  target_link_options(triton PRIVATE ${LLVM_LDFLAGS})
++  target_link_options(triton PUBLIC ${LLVM_LDFLAGS})
 +endif()
 +
  if (UNIX AND NOT APPLE)
    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,ALL")
  endif()
-@@ -282,15 +392,29 @@ if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
+@@ -282,15 +392,27 @@ if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
    target_link_libraries(triton PRIVATE ${PYTHON_LDFLAGS})
  endif()
  
@@ -138,8 +138,6 @@ index ca0a4f7f7..41db832ed 100644
 +  if(APPLE)
 +    set(PYTHON_LDFLAGS "-undefined dynamic_lookup")
 +  endif()
-+
-+  target_link_libraries(triton PRIVATE ${PYTHON_LDFLAGS})
 +endif()
 +
 +if(NOT TRITON_BUILD_PYTHON_MODULE AND NOT TRITON_BUILD_SHARED_OBJECT)
