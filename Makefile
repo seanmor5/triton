@@ -44,6 +44,7 @@ build:
 
 install: build
 	@echo "Installing Triton library..."
+	@mkdir -p $(PRIV_DIR)
 	@ln -sf $(BUILD_DIR)/libtriton.so $(PRIV_DIR)/libtriton_nif.so
 
 clean:
