@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index ca0a4f7f7..a9acf00a9 100644
+index ca0a4f7f7..fcbc6b5bf 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -24,6 +24,7 @@ endif()
@@ -125,7 +125,7 @@ index ca0a4f7f7..a9acf00a9 100644
  if (UNIX AND NOT APPLE)
    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,ALL")
  endif()
-@@ -282,7 +391,18 @@ if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
+@@ -282,15 +391,29 @@ if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
    target_link_libraries(triton PRIVATE ${PYTHON_LDFLAGS})
  endif()
  
@@ -145,3 +145,16 @@ index ca0a4f7f7..a9acf00a9 100644
    foreach(CODEGEN_BACKEND ${TRITON_CODEGEN_BACKENDS})
      add_subdirectory(third_party/${CODEGEN_BACKEND})
    endforeach()
+ endif()
+ 
+ add_subdirectory(third_party/f2reduce)
+-add_subdirectory(bin)
+-add_subdirectory(test)
++
++if(not TRITON_BUILD_SHARED_OBJECT)
++  add_subdirectory(bin)
++  add_subdirectory(test)
++endif()
+ 
+ if(TRITON_BUILD_UT)
+   add_subdirectory(unittest)
