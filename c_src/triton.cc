@@ -85,7 +85,7 @@ ERL_NIF_TERM create_mlir_context(ErlNifEnv * env, int argc, const ERL_NIF_TERM a
 
   llvm::StdThreadPool** thread_pool;
   if (!nif::get<llvm::StdThreadPool*>(env, argv[0], thread_pool)) {
-    return exla::nif::error(env, "Unable to get thread pool.");
+    return nif::error(env, "Unable to get thread pool.");
   }
   auto interface_ptr = reinterpret_cast<llvm::ThreadPoolInterface*>(*thread_pool);
 
