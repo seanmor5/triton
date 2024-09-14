@@ -38,6 +38,9 @@ static int open_resources(ErlNifEnv* env) {
   if (!nif::open_resource<mlir::MLIRContext*>(env, mod, "mlir::MLIRContext")) {
     return -1;
   }
+  if (!nif::open_resource<mlir::ModuleOp>(env, mod, "mlir::ModuleOp")) {
+    return -1;
+  }
   if (!nif::open_resource<mlir::Value>(env, mod, "mlir::Value")) {
     return -1;
   }
@@ -128,6 +131,23 @@ ERL_NIF_TERM create_triton_op_builder(ErlNifEnv * env, int argc, const ERL_NIF_T
   return nif::ok(env, nif::make<TritonOpBuilder*>(env, builder));
 }
 
+// Module
+
+ERL_NIF_TERM create_module(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 1) {
+    return nif::error(env, "Unable to get Triton op builder.");
+  }
+
+  TritonOpBuilder** builder;
+
+  if (!nif::get<TritonOpBuilder*>(env, argv[0], builder)) {
+    return nif::error(env, "Unable to get builder.");
+  }
+
+  mlir::ModuleOp module = (*builder)->create<mlir::ModuleOp>();
+  return nif::ok(env, nif::make<mlir::ModuleOp>(env, module));
+}
+
 // Ops
 
 ERL_NIF_TERM get_int1(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
@@ -155,6 +175,7 @@ static ErlNifFunc triton_funcs[] = {
   {"create_llvm_thread_pool", 1, create_llvm_thread_pool},
   {"create_mlir_context", 1, create_mlir_context},
   {"create_triton_op_builder", 1, create_triton_op_builder},
+  {"create_mlir_module", 1, create_module},
   // Ops
   {"get_int1", 2, get_int1}
 };

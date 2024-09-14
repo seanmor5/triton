@@ -14,6 +14,10 @@ defmodule Triton.MLIR.Builder do
     end)
   end
 
+  def create_block(%__MODULE__{ref: ref}) do
+    
+  end
+
   defp unwrap!({:ok, ref}), do: ref
   defp unwrap!({:error, reason}), do: raise("#{reason}")
 end

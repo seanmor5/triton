@@ -11,5 +11,7 @@ defmodule Triton.NIF do
   def create_mlir_context(_thread_pool), do: :erlang.nif_error(:undef)
   def create_triton_op_builder(_context), do: :erlang.nif_error(:undef)
 
+  def create_module(_builder), do: :erlang.nif_error(:undef)
+
   def get_int1(_builder, _value), do: :erlang.nif_error(:undef)
 end
