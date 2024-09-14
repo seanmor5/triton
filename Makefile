@@ -40,8 +40,8 @@ LDFLAGS := -L$(PRIV_DIR)/lib -Wl,-rpath,$(PRIV_DIR)/lib \
            -L$(LLVM_DIR)/lib \
            -L$(LLVM_DIR)/tools/mlir/lib \
            -L$(LLVM_DIR)/tools \
-           $(LLVM_LDFLAGS) \
-           $(MLIR_LIBS)
+           $(MLIR_LIBS) \
+           $(LLVM_LDFLAGS)
 
 .PHONY: all clean triton fetch build install install_headers deep-clean
 
