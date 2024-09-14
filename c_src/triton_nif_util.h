@@ -1,8 +1,9 @@
 #ifndef EXLA_NIF_UTIL_H_
 #define EXLA_NIF_UTIL_H_
 
-#include <memory>
 #include "erl_nif.h"
+
+#include <memory>
 
 namespace nif {
 // Helper for returning `{:error, msg}` from NIF.

@@ -21,7 +21,8 @@ LLVM_LDFLAGS := $(shell $(LLVM_CONFIG) --ldflags) $(shell $(LLVM_CONFIG) --syste
 # MLIR libraries and includes
 MLIR_INCLUDE := -I$(LLVM_DIR)/include
 MLIR_LIBS := -lMLIRAnalysis -lMLIRDialect -lMLIRPass -lMLIRTransforms -lMLIRParser \
-             -lMLIRIR -lMLIRSupport -lMLIRExecutionEngine -lMLIRLLVMToLLVMIRTranslation
+             -lMLIRIR -lMLIRSupport -lMLIRExecutionEngine -lMLIRLLVMToLLVMIRTranslation \
+             -lMLIRLLVMDialect
 
 # Compiler and flags
 CXX := g++
@@ -59,13 +60,15 @@ fetch:
 	@if [ ! -d $(CACHE_DIR)/triton ]; then \
 		$(GIT) clone $(TRITON_REPO) $(CACHE_DIR)/triton; \
 	fi
-	@cd $(CACHE_DIR)/triton && $(GIT) fetch origin && $(GIT) checkout $(TRITON_COMMIT)
+	@cp triton_build.patch $(CACHE_DIR)/triton
+	@cd $(CACHE_DIR)/triton && $(GIT) fetch origin && $(GIT) checkout $(TRITON_COMMIT) && $(GIT) apply triton_build.patch
 
 build: fetch
 	@echo "Building Triton library..."
 	@mkdir -p $(BUILD_DIR)
 	@cd $(BUILD_DIR) && $(CMAKE) $(CACHE_DIR)/triton \
 		-DCMAKE_BUILD_TYPE=Release \
+		-DTRITON_BUILD_SHARED_OBJECT=ON \
 		-DTRITON_BUILD_PYTHON_MODULE=OFF \
 		-DTRITON_BUILD_TUTORIALS=OFF \
 		-DTRITON_BUILD_PROTON=OFF \
@@ -78,7 +81,7 @@ build: fetch
 install: build
 	@echo "Installing Triton library..."
 	@mkdir -p $(PRIV_DIR)/lib $(PRIV_DIR)/include
-	@ln -sf $(BUILD_DIR)/lib/libtriton.so $(PRIV_DIR)/lib/
+	@ln -sf $(BUILD_DIR)/lib $(PRIV_DIR)/lib
 
 install_headers: build
 	@echo "Installing Triton headers..."
@@ -98,7 +101,7 @@ install_headers: build
 clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BUILD_DIR)
-	@rm -f $(PRIV_DIR)/lib/libtriton.so
+	@rm -ff $(PRIV_DIR)/lib/*
 	@rm -rf $(PRIV_DIR)/include/triton
 
 deep-clean: clean
