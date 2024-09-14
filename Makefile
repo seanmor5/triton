@@ -9,6 +9,7 @@ PRIV_DIR = $(MIX_APP_PATH)/priv
 LLVM_DIR = /home/sean/llvm-project/build/
 
 GIT := git
+CMAKE := cmake
 
 .PHONY: all fetch build install clean deep-clean
 
@@ -31,8 +32,8 @@ build:
 	cd $(BUILD_DIR)
 	$(CMAKE) $(CACHE_DIR)/triton \
 		-DCMAKE_BUILD_TYPE=Release \
+		-DERTS_INCLUDE_DIR=$(ERTS_INCLUDE_DIR) \
 		-DTRITON_BUILD_ELIXIR_MODULE=ON \
-		-DERTS_INCLUDE_PATH=$(ERTS_INCLUDE_PATH) \
 		-DTRITON_BUILD_PYTHON_MODULE=OFF \
 		-DTRITON_BUILD_TUTORIALS=OFF \
 		-DTRITON_BUILD_PROTON=OFF \
