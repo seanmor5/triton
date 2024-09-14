@@ -75,5 +75,6 @@ private:
   std::unique_ptr<mlir::OpBuilder> builder;
   std::unique_ptr<mlir::Location> lastLoc;
   bool lineInfoEnabled = true;
-}
+};
+
 #endif
