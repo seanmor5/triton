@@ -175,7 +175,7 @@ static ErlNifFunc triton_funcs[] = {
   {"create_llvm_thread_pool", 1, create_llvm_thread_pool},
   {"create_mlir_context", 1, create_mlir_context},
   {"create_triton_op_builder", 1, create_triton_op_builder},
-  {"create_mlir_module", 1, create_module},
+  {"create_module", 1, create_module},
   // Ops
   {"get_int1", 2, get_int1}
 };
