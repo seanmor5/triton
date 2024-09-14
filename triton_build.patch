@@ -151,7 +151,7 @@ index ca0a4f7f7..fcbc6b5bf 100644
 -add_subdirectory(bin)
 -add_subdirectory(test)
 +
-+if(not TRITON_BUILD_SHARED_OBJECT)
++if(NOT TRITON_BUILD_SHARED_OBJECT)
 +  add_subdirectory(bin)
 +  add_subdirectory(test)
 +endif()
