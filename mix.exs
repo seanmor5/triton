@@ -15,14 +15,16 @@ defmodule Triton.MixProject do
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      extra_applications: [:logger]
+      extra_applications: [:logger],
+      mod: {Triton.Application, []}
     ]
   end
 
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      {:elixir_make, "~> 0.4", runtime: false}
+      {:elixir_make, "~> 0.4", runtime: false},
+      {:nimble_pool, "~> 1.0"}
     ]
   end
 end

@@ -29,11 +29,16 @@
 #include "triton/Tools/Sys/GetEnv.hpp"
 
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/ThreadPool.h"
 
 static int open_resources(ErlNifEnv* env) {
   const char * mod = "Triton";
 
   if (!nif::open_resource<mlir::MLIRContext*>(env, mod, "MLIRContext")) {
+    return -1;
+  }
+
+  if (!nif::open_resource<llvm::StdThreadPool*>(env, mod, "TheadPool")) {
     return -1;
   }
 
@@ -55,10 +60,34 @@ static int upgrade(ErlNifEnv * env, void ** priv_data, void* * old_priv_data, ER
   return 0;
 }
 
-ERL_NIF_TERM create_mlir_context(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
-  if (argc != 0) {
+ERL_NIF_TERM create_llvm_thread_pool(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 1) {
     return nif::error(env, "Bad argument count.");
   }
+
+  int concurrency;
+
+  if (!nif::get(env, argv[0], &concurrency)) {
+    return nif::error(env, "Unable to get concurrency.");
+  }
+
+  llvm::ThreadPoolStrategy strategy = llvm::hardware_concurrency(concurrency);
+  llvm::StdThreadPool* pool = new llvm::StdThreadPool(strategy);
+
+  auto ret = nif::make<llvm::StdThreadPool*>(env, pool);
+  return nif::ok(env, ret);
+}
+
+ERL_NIF_TERM create_mlir_context(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 1) {
+    return nif::error(env, "Bad argument count.");
+  }
+
+  llvm::StdThreadPool** thread_pool;
+  if (!nif::get<llvm::StdThreadPool*>(env, argv[0], thread_pool)) {
+    return exla::nif::error(env, "Unable to get thread pool.");
+  }
+  auto interface_ptr = reinterpret_cast<llvm::ThreadPoolInterface*>(*thread_pool);
 
   mlir::MLIRContext* context = new mlir::MLIRContext(mlir::MLIRContext::Threading::DISABLED);
 
@@ -71,6 +100,7 @@ ERL_NIF_TERM create_mlir_context(ErlNifEnv * env, int argc, const ERL_NIF_TERM a
   mlir::registerBuiltinDialectTranslation(registry);
   mlir::registerLLVMDialectTranslation(registry);
 
+  context->setThreadPool(*interface_ptr);
   context->appendDialectRegistry(registry);
   context->loadAllAvailableDialects();
 
@@ -78,7 +108,8 @@ ERL_NIF_TERM create_mlir_context(ErlNifEnv * env, int argc, const ERL_NIF_TERM a
 }
 
 static ErlNifFunc triton_funcs[] = {
-  {"create_mlir_context", 0, create_mlir_context}
+  {"create_llvm_thread_pool", 1, create_llvm_thread_pool},
+  {"create_mlir_context", 1, create_mlir_context}
 };
 
 ERL_NIF_INIT(Elixir.Triton.NIF, triton_funcs, &load, NULL, &upgrade, NULL);
