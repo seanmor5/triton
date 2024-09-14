@@ -1,7 +1,7 @@
 defmodule Triton.Language do
   alias Triton.Language.Expr
 
-  use Bitwise
+  import Bitwise
 
   @triton_max_tensor_numel 1_048_576
 
@@ -52,7 +52,7 @@ defmodule Triton.Language do
 
   def cast(%Expr{} = input, dtype, opts \\ []) do
     opts = Keyword.validate!(opts, fp_downcast_rounding: :rtne, bitcast: false)
-    Expr.new(:cast, [input], dtype: dtype | opts)
+    Expr.new(:cast, [input], [{:dtype, dtype} | opts])
   end
 
   def broadcast(%Expr{} = input, %Expr{} = other) do
@@ -87,7 +87,7 @@ defmodule Triton.Language do
 
   def reshape(%Expr{} = input, shape) when is_tuple(shape) do
     opts = Keyword.validate!(opts, can_reorder: false)
-    Expr.new(:reshape, [input], shape: shape | opts)
+    Expr.new(:reshape, [input], [{:shape, shape} | opts])
   end
 
   # TODO:
@@ -185,7 +185,7 @@ defmodule Triton.Language do
   for op <- [:argmax, :argmin] do
     def unquote(op)(%Expr{} = x, axis, opts \\ []) when is_integer(axis) do
       opts = Keyword.validate!(opts, tie_break_left: true, keep_dims: false)
-      Expr.new(unquote(op), [x], axis: axis | opts)
+      Expr.new(unquote(op), [x], [{:axis, axis} | opts])
     end
   end
 
@@ -205,7 +205,7 @@ defmodule Triton.Language do
 
   def reduce(%Expr{} = input, fun, opts \\ []) when is_function(fun, 2) do
     opts = Keyword.validate!(opts, [:axis, keep_dims: false])
-    Expr.new(:reduce, [input], fun: fun | opts)
+    Expr.new(:reduce, [input], [{:fun, fun} | opts])
   end
 
   def sum(%Expr{} = input, opts \\ []) do
@@ -221,7 +221,7 @@ defmodule Triton.Language do
   def associative_scan(%Expr{} = input, axis, fun, opts \\ [])
       when is_integer(axis) and is_function(fun, 2) do
     opts = Keyword.validate!(opts, reverse: false)
-    Expr.new(:reduce, [input], fun: fun | opts)
+    Expr.new(:reduce, [input], [{:fun, fun} | opts])
   end
 
   def cumprod(%Expr{} = input, opts \\ []) do
