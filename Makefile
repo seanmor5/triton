@@ -28,7 +28,8 @@ fetch:
 build:
 	echo "Building Triton library..."
 	mkdir -p $(BUILD_DIR)
-	cd $(BUILD_DIR) && $(CMAKE) $(CACHE_DIR)/triton \
+	cd $(BUILD_DIR)
+	$(CMAKE) $(CACHE_DIR)/triton \
 		-DCMAKE_BUILD_TYPE=Release \
 		-DTRITON_BUILD_ELIXIR_MODULE=ON \
 		-DERTS_INCLUDE_PATH=$(ERTS_INCLUDE_PATH) \
