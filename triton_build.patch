@@ -69,6 +69,7 @@ index ca0a4f7f7..fcbc6b5bf 100644
 +    MLIRSCFToControlFlow
 +    MLIRIndexToLLVM
 +    MLIRGPUToROCDLTransforms
++    MLIRIndexDialect
 +
 +    # LLVM
 +    LLVMPasses
