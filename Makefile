@@ -49,7 +49,7 @@ all: $(PRIV_DIR)/libtriton_nif.so
 
 $(PRIV_DIR)/libtriton_nif.so: triton
 	@echo "Compiling libtriton_nif.so..."
-	$(CXX) $(CXXFLAGS) $(INCLUDE_FLAGS) c_src/triton.cc -o $@ $(LDFLAGS) -shared
+	$(CXX) $(CXXFLAGS) $(INCLUDE_FLAGS) c_src/triton.cc c_src/triton_nif_util.cc c_src/triton_nif_util.h -o $@ $(LDFLAGS) -shared
 
 triton: fetch build install install_headers
 

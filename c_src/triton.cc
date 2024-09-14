@@ -1,4 +1,4 @@
-#include <erl_nif.h>
+#include "triton_nif_util.h"
 
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -31,6 +31,12 @@
 #include "llvm/Support/SourceMgr.h"
 
 static int open_resources(ErlNifEnv* env) {
+  const char * mod = "Triton";
+
+  if (!nif::open_resource<mlir::MLIRContext*>(env, mod, "MLIRContext")) {
+    return -1;
+  }
+
   return 1;
 }
 
@@ -49,26 +55,30 @@ static int upgrade(ErlNifEnv * env, void ** priv_data, void* * old_priv_data, ER
   return 0;
 }
 
-ERL_NIF_TERM error(ErlNifEnv* env, const char* msg) {
-  ERL_NIF_TERM atom = enif_make_atom(env, "error");
-  ERL_NIF_TERM msg_term = enif_make_string(env, msg, ERL_NIF_LATIN1);
-  return enif_make_tuple2(env, atom, msg_term);
-}
-
-ERL_NIF_TERM ok(ErlNifEnv* env) {
-  return enif_make_atom(env, "ok");
-}
-
-ERL_NIF_TERM ok(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
+ERL_NIF_TERM create_mlir_context(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
   if (argc != 0) {
-    return error(env, "Bad argument count.");
+    return exla::nif::error(env, "Bad argument count.");
   }
 
-  return ok(env);
+  mlir::MLIRContext* context = new mlir::MLIRContext(mlir::MLIRContext::Threading::DISABLED);
+
+  mlir::DialectRegistry registry;
+  registry.insert<triton::TritonDialect, mlir::triton::gpu::TritonGPUDialect,
+                math::MathDialect, arith::ArithDialect, index::IndexDialect,
+                scf::SCFDialect, mlir::gpu::GPUDialect,
+                cf::ControlFlowDialect, LLVM::LLVMDialect>();
+  mlir::LLVM::registerInlinerInterface(registry)
+  mlir::registerBuiltinDialectTranslation(registry);
+  mlir::registerLLVMDialectTranslation(registry);
+
+  context->appendDialectRegistry(registry);
+  context->loadAllAvailableDialects();
+
+  return nif::ok(env, nif::make<mlir::MLIRContext*>(env, context));
 }
 
 static ErlNifFunc triton_funcs[] = {
-  {"ok", 0, ok}
+  {"create_mlir_context", 0, create_mlir_context}
 };
 
 ERL_NIF_INIT(Elixir.Triton.NIF, triton_funcs, &load, NULL, &upgrade, NULL);
