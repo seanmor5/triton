@@ -1,5 +1,5 @@
 defmodule Triton do
-  def jit(fun, opts \\ []) when is_function(fun) do
+  def jit(fun, args, opts \\ []) when is_function(fun) do
     :ok
   end
 
