@@ -5,9 +5,9 @@ defmodule Triton.Compiler.NVidia do
 
   alias Triton.Compiler.Passes
 
-  def compile(stage, module, metadata, opts)
+  def compile_stage(module, stage, metadata, opts)
 
-  def compile(:ttir, %Module{} = mod, _metadata, _opts) do
+  def compile_stage(%Module{} = mod, :ttir, _metadata, _opts) do
     mod.builder.context
     |> PassManager.new()
     |> Passes.common_add_inliner()

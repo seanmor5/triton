@@ -8,6 +8,8 @@ defmodule Triton.Compiler do
   alias Triton.MLIR.Typespec
   alias Triton.MLIR.Value
 
+  alias Triton.Compiler.NVidia
+
   def compile(fun, args, opts \\ []) when is_function(fun) do
     params = for {_, i} <- Enum.with_index(args), do: Expr.parameter("arg#{i}")
     expr = apply(fun, args)
@@ -24,7 +26,9 @@ defmodule Triton.Compiler do
 
     _result = recur_expr_to_ttir(expr, builder, module)
 
-    Triton.MLIR.PassManager.new(module.builder.context)
+    module
+    |> NVidia.compile_stage(:ttir, %{}, [])
+    |> Module.module_to_string()
   end
 
   defp recur_expr_to_ttir(%Expr{op: :arange, opts: [low: low, high: high]}, builder, module) do
