@@ -317,7 +317,7 @@ ERL_NIF_TERM create_pass_manager(ErlNifEnv * env, int argc, const ERL_NIF_TERM a
     return nif::error(env, "Unable to get MLIR context.");
   }
 
-  mlir::PassManager pass_manager = mlir::PassManager(*context);
+  mlir::PassManager pass_manager(*context);
   return nif::ok(env, nif::make<mlir::PassManager>(env, pass_manager));
 }
 
