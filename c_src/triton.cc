@@ -302,6 +302,30 @@ ERL_NIF_TERM get_int1(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
   return nif::ok(env, nif::make<mlir::Value>(env, ret));
 }
 
+ERL_NIF_TERM make_range_op(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 3) {
+    return nif::error(env, "Bad argument count.");
+  }
+
+  TritonOpBuilder** builder;
+  int low;
+  int high;
+
+  if (!nif::get<TritonOpBuilder*>(env, argv[0], builder)) {
+    return nif::error(env, "Unable to get builder.");
+  }
+  if (!nif::get(env, argv[1], &low)) {
+    return nif::error(env, "Unable to get low");
+  }
+  if (!nif::get(env, argv[2], &high)) {
+    return nif::error(env, "Unable to get high");
+  }
+
+  auto retType = mlir::RankedTensorType::get({high - low}, (*builder)->getBuilder().getI32Type());
+  mlir::Value ret = (*builder)->create<mlir::triton::MakeRangeOp>(retType, low, high);
+  return nif::ok(env, nif::make<mlir::Value>(env, ret));
+}
+
 static ErlNifFunc triton_funcs[] = {
   {"create_llvm_thread_pool", 1, create_llvm_thread_pool},
   {"create_mlir_context", 1, create_mlir_context},
@@ -312,7 +336,8 @@ static ErlNifFunc triton_funcs[] = {
   {"add_entry_block", 1, add_entry_block},
   {"set_insertion_point_to_start", 2, set_insertion_point_to_start},
   // Ops
-  {"get_int1", 2, get_int1}
+  {"get_int1", 2, get_int1},
+  {"make_range_op", 3, make_range_op}
 };
 
 ERL_NIF_INIT(Elixir.Triton.NIF, triton_funcs, &load, NULL, &upgrade, NULL);

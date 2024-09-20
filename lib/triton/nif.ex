@@ -31,4 +31,6 @@ defmodule Triton.NIF do
   def set_insertion_point_to_start(_builder, _block), do: :erlang.nif_error(:undef)
 
   def get_int1(_builder, _value), do: :erlang.nif_error(:undef)
+
+  def make_range_op(_builder, _low, _high), do: :erlang.nif_error(:undef)
 end

@@ -6,21 +6,27 @@ defmodule Triton.Compiler do
   alias Triton.MLIR.Builder
   alias Triton.MLIR.Module
   alias Triton.MLIR.Typespec
+  alias Triton.MLIR.Value
 
   def compile(fun, args, opts \\ []) when is_function(fun) do
     params = for {_, i} <- Enum.with_index(args), do: Expr.parameter("arg#{i}")
     expr = apply(fun, args)
 
+    args = []
+    ret = [Typespec.tensor({:s, 32}, {4})]
+
     builder = Builder.new()
-    module = Builder.create_module(builder)
-    args = List.wrap(Typespec.tensor({:s, 8}, {1, 1}))
 
-    Module.create_function(module, kernel_name(), args, args, "public")
+    module =
+      builder
+      |> Builder.create_module()
+      |> Module.create_function(kernel_name(), args, ret, "public")
 
-    # recur_expr_to_ttir(expr, builder, module, function)
+    recur_expr_to_ttir(expr, builder, module, function)
   end
 
-  defp recur_expr_to_ttir(%Expr{op: :constant, opts: [value: value]}, builder, module, function) do
+  defp recur_expr_to_ttir(%Expr{op: :arange, opts: [low: low, high: high]}, builder, module, function) do
+    Value.make_range_op(builder, low, high)
   end
 
   defp kernel_name, do: "triton_kernel_#{System.os_time()}"
