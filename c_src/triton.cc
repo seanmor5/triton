@@ -167,7 +167,7 @@ ERL_NIF_TERM create_function(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[
   if (!nif::get<TritonOpBuilder*>(env, argv[0], builder)) {
     return nif::error(env, "Unable to get builder.");
   }
-  if (!nif::get<mlir::Module>(env, argv[1], module)) {
+  if (!nif::get<mlir::ModuleOp>(env, argv[1], module)) {
     return nif::error(env, "Unable to get module.");
   }
   if (!nif::get(env, argv[2], func_name)) {
@@ -207,7 +207,7 @@ ERL_NIF_TERM create_function(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[
   }
 
   auto visibility = is_public ? "public" : "private";
-  auto func_type = (*builder)->getBuilder().getFunctionType(arg_types, return_types);
+  auto func_type = (*builder)->getBuilder().getFunctionType(arg_types, ret_types);
 
  llvm::SmallVector<mlir::NamedAttribute> attrs = {
    mlir::NamedAttribute(
