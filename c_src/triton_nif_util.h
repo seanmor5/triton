@@ -93,4 +93,20 @@ ERL_NIF_TERM make(ErlNifEnv* env, T& var) {
 ERL_NIF_TERM make(ErlNifEnv* env, std::string var);
 }
 
+#define ADD_PASS_WRAPPER_0(name, builder)                                     \
+  ERL_NIF_TERM name(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {    \
+    if (argc != 1) {                                                          \
+      return nif::error(env, "Bad argument count");                           \
+    }                                                                         \
+                                                                              \
+    mlir::PassManager* pass_manager;                                          \
+                                                                              \
+    if(!nif::get<mlir::PassManager>(env, argv[0], pass_manager)) {            \
+      return nif::error(env, "Unable to get pass manager.");                  \
+    }                                                                         \
+                                                                              \
+    (*pass_manager).addPass(builder());                                       \
+    return nif::ok(env);                                                      \
+  }
+
 #endif

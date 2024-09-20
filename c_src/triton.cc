@@ -50,6 +50,9 @@ static int open_resources(ErlNifEnv* env) {
   if (!nif::open_resource<mlir::Block*>(env, mod, "mlir::Block*")) {
     return -1;
   }
+  if (!nif::open_resource<mlir::PassManager>(env, mod, "mlir::PassManager")) {
+    return -1;
+  }
   if (!nif::open_resource<llvm::StdThreadPool*>(env, mod, "llvm::StdTheadPool")) {
     return -1;
   }
@@ -301,6 +304,23 @@ ERL_NIF_TERM module_to_string(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv
   return nif::ok(env, nif::make(env, str));
 }
 
+// Passes
+
+ERL_NIF_TERM create_pass_manager(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 1) {
+    return nif::error(env, "Bad argument count.");
+  }
+
+  mlir::MLIRContext** context;
+
+  if (!nif::get<mlir::MLIRContext*>(env, argv[0], context)) {
+    return nif::error(env, "Unable to get MLIR context.");
+  }
+
+  mlir::PassManager pass_manager = mlir::PassManager(*context);
+  return nif::ok(env, nif::make<mlir::PassManager>(env, pass_manager));
+}
+
 // Ops
 
 ERL_NIF_TERM get_int1(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
@@ -358,6 +378,7 @@ static ErlNifFunc triton_funcs[] = {
   {"add_entry_block", 1, add_entry_block},
   {"set_insertion_point_to_start", 2, set_insertion_point_to_start},
   {"module_to_string", 1, module_to_string},
+  {"create_pass_manager", 1, create_pass_manager},
   // Ops
   {"get_int1", 2, get_int1},
   {"make_range_op", 3, make_range_op}

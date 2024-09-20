@@ -32,6 +32,8 @@ defmodule Triton.NIF do
 
   def module_to_string(_module), do: :erlang.nif_error(:undef)
 
+  def create_pass_manager(_context), do: :erlang.nif_error(:undef)
+
   def get_int1(_builder, _value), do: :erlang.nif_error(:undef)
 
   def make_range_op(_builder, _low, _high), do: :erlang.nif_error(:undef)
