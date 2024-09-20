@@ -7,7 +7,7 @@ defmodule Triton.Compiler do
   alias Triton.MLIR.Module
 
   def compile(fun, args, opts \\ []) when is_function(opts) do
-    params = for _, i <- Enum.with_index(args), do: Expr.parameter("arg#{i}")
+    params = for {_, i} <- Enum.with_index(args), do: Expr.parameter("arg#{i}")
     expr = apply(fun, args)
 
     builder = Builder.new()
