@@ -309,7 +309,7 @@ static ErlNifFunc triton_funcs[] = {
   {"create_module", 1, create_module},
   {"create_function", 7, create_function},
   {"push_function", 2, push_function},
-  {"add_entry_block", 2, add_entry_block},
+  {"add_entry_block", 1, add_entry_block},
   {"set_insertion_point_to_start", 2, set_insertion_point_to_start},
   // Ops
   {"get_int1", 2, get_int1}
