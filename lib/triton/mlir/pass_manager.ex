@@ -2,6 +2,7 @@ defmodule Triton.MLIR.PassManager do
   @moduledoc false
 
   alias Triton.MLIR.Module
+  alias __MODULE__
 
   defstruct [:ref, :context]
 
