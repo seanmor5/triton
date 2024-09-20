@@ -13,11 +13,9 @@ defmodule Triton.Compiler do
 
     builder = Builder.new()
     module = Builder.create_module(builder)
+    args = List.wrap(Typespec.tensor({:s, 8}, {1, 1}))
 
-    arg_types = Enum.map(List.wrap(Typespec.tensor({:s, 8}, {1, 1})), &Typespec.encode/1)
-    ret_types = Enum.map(List.wrap(Typespec.tensor({:s, 8}, {1, 1})), &Typespec.encode/1)
-
-    Triton.NIF.create_function(builder.ref, module.ref, kernel_name(), arg_types, ret_types, 1, 0)
+    Module.create_function(module, kernel_name(), args, args, "public")
 
     # recur_expr_to_ttir(expr, builder, module, function)
   end
