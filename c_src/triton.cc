@@ -38,7 +38,7 @@ static int open_resources(ErlNifEnv* env) {
   if (!nif::open_resource<mlir::MLIRContext*>(env, mod, "mlir::MLIRContext")) {
     return -1;
   }
-  if (!nif::open_resource<mlir::ModuleOp>(env, mod, "mlir::ModuleOp")) {
+  if (!nif::open_resource<mlir::triton::ModuleOp>(env, mod, "mlir::triton::ModuleOp")) {
     return -1;
   }
   if (!nif::open_resource<mlir::triton::FuncOp>(env, mod, "mlir::triton::FuncOp")) {
@@ -147,8 +147,8 @@ ERL_NIF_TERM create_module(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[])
     return nif::error(env, "Unable to get builder.");
   }
 
-  mlir::ModuleOp module = (*builder)->create<mlir::ModuleOp>();
-  return nif::ok(env, nif::make<mlir::ModuleOp>(env, module));
+  mlir::triton::ModuleOp module = (*builder)->create<mlir::triton::ModuleOp>();
+  return nif::ok(env, nif::make<mlir::triton::ModuleOp>(env, module));
 }
 
 ERL_NIF_TERM create_function(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
@@ -157,7 +157,7 @@ ERL_NIF_TERM create_function(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[
   }
 
   TritonOpBuilder** builder;
-  mlir::ModuleOp* module;
+  mlir::triton::ModuleOp* module;
   std::string func_name;
   std::vector<std::string> arg_type_strings;
   std::vector<std::string> ret_type_strings;
@@ -167,7 +167,7 @@ ERL_NIF_TERM create_function(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[
   if (!nif::get<TritonOpBuilder*>(env, argv[0], builder)) {
     return nif::error(env, "Unable to get builder.");
   }
-  if (!nif::get<mlir::ModuleOp>(env, argv[1], module)) {
+  if (!nif::get<mlir::triton::ModuleOp>(env, argv[1], module)) {
     return nif::error(env, "Unable to get module.");
   }
   if (!nif::get(env, argv[2], func_name)) {
@@ -225,10 +225,10 @@ ERL_NIF_TERM push_function(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[])
     return nif::error(env, "Bad argument count.");
   }
 
-  mlir::ModuleOp* module;
+  mlir::triton::ModuleOp* module;
   mlir::triton::FuncOp* function;
 
-  if (!nif::get<mlir::ModuleOp>(env, argv[0], module)) {
+  if (!nif::get<mlir::triton::ModuleOp>(env, argv[0], module)) {
     return nif::error(env, "Unable to get module.");
   }
   if (!nif::get<mlir::triton::FuncOp>(env, argv[1], function)) {
