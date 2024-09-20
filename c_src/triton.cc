@@ -345,47 +345,47 @@ ERL_NIF_TERM run_pass_manager(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv
 
   try {
     // Handle TRITON_REPRODUCER_PATH
-    std::string reproducerPath = triton::tools::getStrEnv("TRITON_REPRODUCER_PATH");
-    if (!reproducerPath.empty()) {
-      // Assuming makeReproducer is defined elsewhere
-      // makeReproducer(pass_manager->getOpAnchorName(), pass_manager->getPasses(), 
-      //                module.getOperation(), reproducerPath);
-    }
+    // std::string reproducerPath = mlir::triton::tools::getStrEnv("TRITON_REPRODUCER_PATH");
+    // if (!reproducerPath.empty()) {
+    //   // Assuming makeReproducer is defined elsewhere
+    //   // makeReproducer(pass_manager->getOpAnchorName(), pass_manager->getPasses(), 
+    //   //                module.getOperation(), reproducerPath);
+    // }
 
     // Handle TRITON_ENABLE_LLVM_DEBUG
-    if (triton::tools::getStrEnv("TRITON_ENABLE_LLVM_DEBUG") == "true") {
-      llvm::DebugFlag = true;
-    }
+    // if (mlir::triton::tools::getStrEnv("TRITON_ENABLE_LLVM_DEBUG") == "true") {
+    //   llvm::DebugFlag = true;
+    // }
 
     // Handle TRITON_LLVM_DEBUG_ONLY
-    std::string debugOnly = triton::tools::getStrEnv("TRITON_LLVM_DEBUG_ONLY");
-    if (!debugOnly.empty()) {
-      std::vector<std::string> debugTypes;
-      size_t pos = 0;
-      std::string token;
-      while ((pos = debugOnly.find(',')) != std::string::npos) {
-        token = debugOnly.substr(0, pos);
-        debugTypes.push_back(token);
-        debugOnly.erase(0, pos + 1);
-      }
-      debugTypes.push_back(debugOnly);
+    // std::string debugOnly = mlir::triton::tools::getStrEnv("TRITON_LLVM_DEBUG_ONLY");
+    // if (!debugOnly.empty()) {
+    //   std::vector<std::string> debugTypes;
+    //   size_t pos = 0;
+    //   std::string token;
+    //   while ((pos = debugOnly.find(',')) != std::string::npos) {
+    //     token = debugOnly.substr(0, pos);
+    //     debugTypes.push_back(token);
+    //     debugOnly.erase(0, pos + 1);
+    //   }
+    //   debugTypes.push_back(debugOnly);
 
-      std::vector<const char*> debugTypesChar;
-      for (const auto& type : debugTypes) {
-        debugTypesChar.push_back(type.c_str());
-      }
+    //   std::vector<const char*> debugTypesChar;
+    //   for (const auto& type : debugTypes) {
+    //     debugTypesChar.push_back(type.c_str());
+    //   }
 
-      llvm::DebugFlag = true;
-      llvm::setCurrentDebugTypes(debugTypesChar.data(), debugTypesChar.size());
-    }
+    //   llvm::DebugFlag = true;
+    //   llvm::setCurrentDebugTypes(debugTypesChar.data(), debugTypesChar.size());
+    // }
 
     // Handle MLIR_ENABLE_TIMING
-    if (triton::tools::getStrEnv("MLIR_ENABLE_TIMING") == "true") {
-      pass_manager->enableTiming();
-    }
+    // if (mlir::triton::tools::getStrEnv("MLIR_ENABLE_TIMING") == "true") {
+    //   pass_manager->enableTiming();
+    // }
 
     // Run the pass manager
-    if (mlir::failed(pass_manager->run((*module).getOperation()))) {
+    if (mlir::failed((*pass_manager)->run((*module).getOperation()))) {
       throw std::runtime_error("PassManager::run failed");
     }
 
