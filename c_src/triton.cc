@@ -220,6 +220,25 @@ ERL_NIF_TERM create_function(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[
   return nif::ok(env, nif::make<mlir::triton::FuncOp>(env, func_op));
 }
 
+ERL_NIF_TERM push_function(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 2) {
+    return nif::error(env, "Bad argument count.");
+  }
+
+  mlir::ModuleOp* module;
+  mlir::triton::FuncOp* function;
+
+  if (!nif::get<mlir::ModuleOp>(env, argv[0], module)) {
+    return nif::error(env, "Unable to get module.");
+  }
+  if (!nif::get<mlir::triton::FuncOp>(env, argv[1], function)) {
+    return nif::error(env, "Unable to get function.");
+  }
+
+  (*module)->push_back(*function);
+  return nif::ok(env);
+}
+
 // Ops
 
 ERL_NIF_TERM get_int1(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
@@ -249,6 +268,7 @@ static ErlNifFunc triton_funcs[] = {
   {"create_triton_op_builder", 1, create_triton_op_builder},
   {"create_module", 1, create_module},
   {"create_function", 7, create_function},
+  {"push_function", 2, push_function},
   // Ops
   {"get_int1", 2, get_int1}
 };

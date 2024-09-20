@@ -24,5 +24,7 @@ defmodule Triton.NIF do
       ),
       do: :erlang.nif_error(:undef)
 
+  def push_function(_module, _function), do: :erlang.nif_error(:undef)
+
   def get_int1(_builder, _value), do: :erlang.nif_error(:undef)
 end
