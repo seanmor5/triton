@@ -23,6 +23,12 @@ defmodule Triton.MLIR.Builder do
     %Module{ref: module_ref, builder: builder}
   end
 
+  def set_insertion_point_to_start(%__MODULE__{ref: ref} = builder, block_ref) do
+    :ok = ref |> Triton.NIF.set_insertion_point_to_start(block_ref) |> unwrap!()
+    builder
+  end
+
+  defp unwrap!(:ok), do: :ok
   defp unwrap!({:ok, ref}), do: ref
   defp unwrap!({:error, reason}), do: raise("#{reason}")
 end

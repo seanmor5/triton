@@ -47,6 +47,9 @@ static int open_resources(ErlNifEnv* env) {
   if (!nif::open_resource<mlir::Value>(env, mod, "mlir::Value")) {
     return -1;
   }
+  if (!nif::open_resource<mlir::Block*>(env, mod, "mlir::Block*")) {
+    return -1;
+  }
   if (!nif::open_resource<llvm::StdThreadPool*>(env, mod, "llvm::StdTheadPool")) {
     return -1;
   }
@@ -235,7 +238,43 @@ ERL_NIF_TERM push_function(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[])
     return nif::error(env, "Unable to get function.");
   }
 
-  (*module)->push_back(*function);
+  (*module)->getBody()->push_back(*function);
+  return nif::ok(env);
+}
+
+ERL_NIF_TERM add_entry_block(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 1) {
+    return nif::error(env, "Bad argument count.");
+  }
+
+  mlir::triton::FuncOp* function;
+
+  if (!nif::get<mlir::triton::FuncOp>(env, argv[0], function)) {
+    return nif::error(env, "Unable to get function.");
+  }
+
+  auto func = static_cast<mlir::triton::FuncOp>(*function);
+
+  mlir::Block * block = func.addEntryBlock();
+  return nif::ok(env, nif::make<mlir::Block*>(env, block));
+}
+
+ERL_NIF_TERM set_insertion_point_to_start(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 2) {
+    return nif::error(env, "Bad argument count.");
+  }
+
+  TritonOpBuilder** builder;
+  mlir::Block** block;
+
+  if (!nif::get<TritonOpBuilder*>(env, argv[0], builder)) {
+    return nif::error(env, "Unable to get builder.");
+  }
+  if (!nif::get<mlir::Block*>(env, argv[1], block)) {
+    return nif::error(env, "Unable to get block.");
+  }
+
+  (*builder)->setInsertionPointToStart(**block);
   return nif::ok(env);
 }
 
@@ -269,6 +308,8 @@ static ErlNifFunc triton_funcs[] = {
   {"create_module", 1, create_module},
   {"create_function", 7, create_function},
   {"push_function", 2, push_function},
+  {"add_entry_block", 2, add_entry_block},
+  {"set_insertion_point_to_start", 2, set_insertion_point_to_start},
   // Ops
   {"get_int1", 2, get_int1}
 };

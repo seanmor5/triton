@@ -1,7 +1,7 @@
 defmodule Triton.MLIR.Function do
   @moduledoc false
 
-  defstruct [:ref, :args, :ret, :name, :visibility]
+  defstruct [:ref, :args, :ret, :name, :visibility, :blocks]
 
   alias Triton.MLIR.Builder
   alias Triton.MLIR.Module
@@ -31,6 +31,17 @@ defmodule Triton.MLIR.Function do
       name: name,
       visibility: visibility
     )
+  end
+
+  def add_entry_block(%__MODULE__{ref: ref} = func) do
+    blocks = func.blocks || []
+
+    block_ref =
+      ref
+      |> Triton.NIF.add_entry_block()
+      |> unwrap!()
+
+    %{func | blocks: [block_ref | blocks]}
   end
 
   defp unwrap!({:ok, ref}), do: ref
