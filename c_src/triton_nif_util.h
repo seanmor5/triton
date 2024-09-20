@@ -99,13 +99,13 @@ ERL_NIF_TERM make(ErlNifEnv* env, std::string var);
       return nif::error(env, "Bad argument count");                           \
     }                                                                         \
                                                                               \
-    mlir::PassManager* pass_manager;                                          \
+    mlir::PassManager** pass_manager;                                         \
                                                                               \
-    if(!nif::get<mlir::PassManager>(env, argv[0], pass_manager)) {            \
+    if(!nif::get<mlir::PassManager*>(env, argv[0], pass_manager)) {           \
       return nif::error(env, "Unable to get pass manager.");                  \
     }                                                                         \
                                                                               \
-    (*pass_manager).addPass(builder());                                       \
+    (*pass_manager)->addPass(builder());                                      \
     return nif::ok(env);                                                      \
   }
 

@@ -50,7 +50,7 @@ static int open_resources(ErlNifEnv* env) {
   if (!nif::open_resource<mlir::Block*>(env, mod, "mlir::Block*")) {
     return -1;
   }
-  if (!nif::open_resource<mlir::PassManager>(env, mod, "mlir::PassManager")) {
+  if (!nif::open_resource<mlir::PassManager*>(env, mod, "mlir::PassManager")) {
     return -1;
   }
   if (!nif::open_resource<llvm::StdThreadPool*>(env, mod, "llvm::StdTheadPool")) {
@@ -317,8 +317,8 @@ ERL_NIF_TERM create_pass_manager(ErlNifEnv * env, int argc, const ERL_NIF_TERM a
     return nif::error(env, "Unable to get MLIR context.");
   }
 
-  mlir::PassManager pass_manager(*context);
-  return nif::ok(env, nif::make<mlir::PassManager>(env, pass_manager));
+  mlir::PassManager * pass_manager = new mlir::PassManager(*context);
+  return nif::ok(env, nif::make<mlir::PassManager*>(env, pass_manager));
 }
 
 // Ops
