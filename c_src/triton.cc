@@ -28,6 +28,11 @@
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
+#include "triton/Conversion/TritonGPUToLLVM/Passes.h"
+#include "triton/Conversion/TritonToTritonGPU/Passes.h"
+#include "triton/Dialect/Triton/Transforms/Passes.h"
+#include "triton/Dialect/TritonGPU/Transforms/Passes.h"
+#include "triton/Target/LLVMIR/Passes.h"
 
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ThreadPool.h"
@@ -321,6 +326,47 @@ ERL_NIF_TERM create_pass_manager(ErlNifEnv * env, int argc, const ERL_NIF_TERM a
   return nif::ok(env, nif::make<mlir::PassManager*>(env, pass_manager));
 }
 
+// common
+ADD_PASS_WRAPPER_0("common_add_sccp", mlir::createSCCPPass);
+ADD_PASS_WRAPPER_0("common_add_symbol_dce", mlir::createSymbolDCEPass);
+ADD_PASS_WRAPPER_0("common_add_inliner", mlir::createInlinerPass);
+ADD_PASS_WRAPPER_0("common_add_canonicalizer", mlir::createCanonicalizerPass);
+ADD_PASS_WRAPPER_0("common_add_cse", mlir::createCSEPass);
+ADD_PASS_WRAPPER_0("common_add_licm", mlir::createLoopInvariantCodeMotionPass);
+
+// ttir
+ADD_PASS_WRAPPER_0("ttir_add_combine", mlir::triton::createCombineOpsPass);
+ADD_PASS_WRAPPER_0("ttir_add_reorder_broadcast", mlir::triton::createReorderBroadcastPass);
+ADD_PASS_WRAPPER_0("ttir_add_rewrite_tensor_pointer", mlir::triton::createRewriteTensorPointerPass);
+ADD_PASS_WRAPPER_0("ttir_add_loop_unroll", mlir::triton::createLoopUnrollPass);
+// ADD_PASS_WRAPPER_4("add_convert_to_ttgpuir",
+//                    createConvertTritonToTritonGPUPass, const std::string &,
+//                    int, int, int);
+
+// ttgpuir
+ADD_PASS_WRAPPER_0("ttgpuir_add_coalesce", mlir::triton::gpu::createTritonGPUCoalesce);
+ADD_PASS_WRAPPER_0("ttgpuir_add_optimize_thread_locality", mlir::triton::gpu::createTritonGPUOptimizeThreadLocality);
+// ADD_PASS_OPTION_WRAPPER_1("add_pipeline", createTritonGPUPipeline, int);
+ADD_PASS_WRAPPER_0("ttgpuir_add_prefetch", mlir::triton::gpu::createTritonGPUPrefetch);
+ADD_PASS_WRAPPER_0("ttgpuir_add_accelerate_matmul", mlir::triton::gpu::createTritonGPUAccelerateMatmul);
+ADD_PASS_WRAPPER_0("ttgpuir_add_reorder_instructions", mlir::triton::gpu::createTritonGPUReorderInstructions);
+ADD_PASS_WRAPPER_0("ttgpuir_add_f32_dot_tc", mlir::triton::gpu::createTritonGPUF32DotTC);
+// ADD_PASS_OPTION_WRAPPER_1("add_optimize_dot_operands", createTritonGPUOptimizeDotOperands, bool);
+ADD_PASS_WRAPPER_0("ttgpuir_add_remove_layout_conversions", mlir::triton::gpu::createTritonGPURemoveLayoutConversions);
+ADD_PASS_WRAPPER_0("ttgpuir_add_reduce_data_duplication", mlir::triton::gpu::createTritonGPUReduceDataDuplication);
+ADD_PASS_WRAPPER_0("ttgpuir_add_allocate_shared_memory", mlir::triton::gpu::createAllocateSharedMemoryPass);
+ADD_PASS_WRAPPER_0("ttgpuir_add_combine_tensor_select_and_if", mlir::triton::gpu::createTritonGPUCombineTensorSelectAndIf);
+ADD_PASS_WRAPPER_0("ttgpuir_add_optimize_accumulator_init", mlir::triton::gpu::createTritonGPUOptimizeAccumulatorInit);
+
+// convert
+ADD_PASS_WRAPPER_0("convert_add_scf_to_cf", mlir::createConvertSCFToCFPass);
+ADD_PASS_WRAPPER_0("convert_add_cf_to_llvmir", mlir::createConvertControlFlowToLLVMPass);
+ADD_PASS_WRAPPER_0("convert_add_index_to_llvmir", mlir::createConvertIndexToLLVMPass);
+ADD_PASS_WRAPPER_0("convert_add_arith_to_llvmir", mlir::createArithToLLVMConversionPass);
+
+// llvmir
+ADD_PASS_WRAPPER_0("llvmir_add_di_scope", mlir::createLLVMDIScopePass);
+
 // Ops
 
 ERL_NIF_TERM get_int1(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
@@ -378,7 +424,34 @@ static ErlNifFunc triton_funcs[] = {
   {"add_entry_block", 1, add_entry_block},
   {"set_insertion_point_to_start", 2, set_insertion_point_to_start},
   {"module_to_string", 1, module_to_string},
+  // Passes
   {"create_pass_manager", 1, create_pass_manager},
+  {"common_add_sccp", 1, common_add_sccp},
+  {"common_add_symbol_dce", 1, common_add_symbol_dce},
+  {"common_add_inliner", 1, common_add_inliner},
+  {"common_add_canonicalizer", 1, common_add_canonicalizer},
+  {"common_add_cse", 1, common_add_cse},
+  {"common_add_licm", 1, common_add_licm},
+  {"ttir_add_combine", 1, ttir_add_combine},
+  {"ttir_add_reorder_broadcast", 1, ttir_add_reorder_broadcast},
+  {"ttir_add_rewrite_tensor_pointer", 1, ttir_add_rewrite_tensor_pointer},
+  {"ttir_add_loop_unroll", 1, ttir_add_loop_unroll},
+  {"ttgpuir_add_coalesce", 1, ttgpuir_add_coalesce},
+  {"ttgpuir_add_optimize_thread_locality", 1, ttgpuir_add_optimize_thread_locality},
+  {"ttgpuir_add_prefetch", 1, ttgpuir_add_prefetch},
+  {"ttgpuir_add_accelerate_matmul", 1, ttgpuir_add_accelerate_matmul},
+  {"ttgpuir_add_reorder_instructions", 1, ttgpuir_add_reorder_instructions},
+  {"ttgpuir_add_f32_dot_tc", 1, ttgpuir_add_f32_dot_tc},
+  {"ttgpuir_add_remove_layout_conversions", 1, ttgpuir_add_remove_layout_conversions},
+  {"ttgpuir_add_reduce_data_duplication", 1, ttgpuir_add_reduce_data_duplication},
+  {"ttgpuir_add_allocate_shared_memory", 1, ttgpuir_add_allocate_shared_memory},
+  {"ttgpuir_add_combine_tensor_select_and_if", 1, ttgpuir_add_combine_tensor_select_and_if},
+  {"ttgpuir_add_optimize_accumulator_init", 1, ttgpuir_add_optimize_accumulator_init},
+  {"convert_add_scf_to_cf", 1, convert_add_scf_to_cf},
+  {"convert_add_cf_to_llvmir", 1, convert_add_cf_to_llvmir},
+  {"convert_add_index_to_llvmir", 1, convert_add_index_to_llvmir},
+  {"convert_add_arith_to_llvmir", 1, convert_add_arith_to_llvmir},
+  {"llvmir_add_di_scope", 1, llvmir_add_di_scope},
   // Ops
   {"get_int1", 2, get_int1},
   {"make_range_op", 3, make_range_op}
