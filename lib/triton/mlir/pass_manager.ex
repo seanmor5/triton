@@ -14,8 +14,9 @@ defmodule Triton.MLIR.PassManager do
     struct(__MODULE__, ref: ref, context: context)
   end
 
-  def run(%PassManager{ref: pm_ref}, %Module{ref: mod_ref}) do
-    
+  def run(%PassManager{ref: pm_ref}, %Module{ref: mod_ref} = mod) do
+    :ok = Triton.NIF.run_pass_manager(pm_ref, mod_ref)
+    mod
   end
 
   defp unwrap!({:ok, val}), do: val
