@@ -496,7 +496,7 @@ ERL_NIF_TERM return_op(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
     return nif::error(env, "Unable to get builder.");
   }
 
-  (*builder)->create<mlir::ReturnOp>(ret);
+  (*builder)->create<mlir::triton::ReturnOp>(ret);
 
   return nif::ok(env);
 }
