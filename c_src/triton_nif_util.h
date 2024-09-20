@@ -89,6 +89,8 @@ ERL_NIF_TERM make(ErlNifEnv* env, T& var) {
   enif_release_resource(ptr);
   return ret;
 }
+
+ERL_NIF_TERM make(ErlNifEnv* env, std::string var);
 }
 
 #endif

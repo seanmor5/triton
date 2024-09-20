@@ -22,4 +22,13 @@ defmodule Triton.MLIR.Module do
 
     %{module | functions: Map.put(funcs, name, func)}
   end
+
+  def module_to_string(%Module{ref: module_ref}) do
+    module_ref
+    |> Triton.NIF.module_to_string()
+    |> unwrap!()
+  end
+
+  defp unwrap!({:ok, val}), do: val
+  defp unwrap!({:error, reason}), do: raise("#{reason}")
 end

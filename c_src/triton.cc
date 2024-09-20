@@ -279,6 +279,28 @@ ERL_NIF_TERM set_insertion_point_to_start(ErlNifEnv * env, int argc, const ERL_N
   return nif::ok(env);
 }
 
+ERL_NIF_TERM module_to_string(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 1) {
+    return nif::error(env, "Bad argument count.");
+  }
+
+  mlir::ModuleOp* module;
+
+  if (!nif::get<mlir::ModuleOp>(env, argv[0], module)) {
+    return nif::error(env, "Unable to get module.");
+  }
+
+  auto mod = static_cast<mlir::ModuleOp>(*module);
+
+  std::string str;
+  llvm::raw_string_ostream os(str);
+  auto printingFlags = mlir::OpPrintingFlags();
+  printingFlags.enableDebugInfo();
+  mod.print(os, printingFlags);
+
+  return nif::ok(env, nif::make(env, str));
+}
+
 // Ops
 
 ERL_NIF_TERM get_int1(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
@@ -335,6 +357,7 @@ static ErlNifFunc triton_funcs[] = {
   {"push_function", 2, push_function},
   {"add_entry_block", 1, add_entry_block},
   {"set_insertion_point_to_start", 2, set_insertion_point_to_start},
+  {"module_to_string", 1, module_to_string},
   // Ops
   {"get_int1", 2, get_int1},
   {"make_range_op", 3, make_range_op}

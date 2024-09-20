@@ -23,6 +23,8 @@ defmodule Triton.Compiler do
       |> Module.add_function(kernel_name(), args, ret, "public")
 
     recur_expr_to_ttir(expr, builder, module)
+
+    IO.write Module.module_to_string(module)
   end
 
   defp recur_expr_to_ttir(%Expr{op: :arange, opts: [low: low, high: high]}, builder, module) do

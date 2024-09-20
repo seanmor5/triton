@@ -73,4 +73,8 @@ int get_list(ErlNifEnv* env, ERL_NIF_TERM list, std::vector<std::string>& var) {
   return 1;
 }
 
+ERL_NIF_TERM make(ErlNifEnv* env, std::string var) {
+  return enif_make_string(env, var.c_str(), ERL_NIF_LATIN1);
+}
+
 }
