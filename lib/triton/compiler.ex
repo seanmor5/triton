@@ -20,7 +20,7 @@ defmodule Triton.Compiler do
     module =
       builder
       |> Builder.create_module()
-      |> Module.create_function(kernel_name(), args, ret, "public")
+      |> Module.add_function(kernel_name(), args, ret, "public")
 
     recur_expr_to_ttir(expr, builder, module, function)
   end
