@@ -490,12 +490,13 @@ ERL_NIF_TERM return_op(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
 
   // TODO: Fix
   TritonOpBuilder** builder;
+  std::vector<mlir::Value> ret{};
 
   if (!nif::get<TritonOpBuilder*>(env, argv[0], builder)) {
     return nif::error(env, "Unable to get builder.");
   }
 
-  (*builder)->create<mlir::ReturnOp>({});
+  (*builder)->create<mlir::ReturnOp>(ret);
 
   return nif::ok(env);
 }
