@@ -41,7 +41,7 @@ static int open_resources(ErlNifEnv* env) {
   if (!nif::open_resource<mlir::ModuleOp>(env, mod, "mlir::ModuleOp")) {
     return -1;
   }
-  if (!nif::open_resource<mlir::FuncOp>(env, mod, "mlir::FuncOp")) {
+  if (!nif::open_resource<mlir::func::FuncOp>(env, mod, "mlir::func::FuncOp")) {
     return -1;
   }
   if (!nif::open_resource<mlir::Value>(env, mod, "mlir::Value")) {
@@ -209,15 +209,15 @@ ERL_NIF_TERM create_function(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[
   auto visibility = is_public ? "public" : "private";
   auto func_type = (*builder)->getBuilder().getFunctionType(arg_types, return_types);
 
- llvm::SmallVector<NamedAttribute> attrs = {
+ llvm::SmallVector<mlir::NamedAttribute> attrs = {
    mlir::NamedAttribute(
        (*builder)->getBuilder().getStringAttr("sym_visibility"),
        (*builder)->getBuilder().getStringAttr(visibility)),
    mlir::NamedAttribute((*builder)->getBuilder().getStringAttr("noinline"),
                   (*builder)->getBuilder().getBoolAttr(noinline))};
 
-  auto func_op = (*builder)->create<mlir::FuncOp>(func_name, func_type, attrs);
-  return nif::ok(env, nif::make<mlir::FuncOp>(env, func_op));
+  auto func_op = (*builder)->create<mlir::func::FuncOp>(func_name, func_type, attrs);
+  return nif::ok(env, nif::make<mlir::func::FuncOp>(env, func_op));
 }
 
 // Ops
