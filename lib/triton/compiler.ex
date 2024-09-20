@@ -22,10 +22,10 @@ defmodule Triton.Compiler do
       |> Builder.create_module()
       |> Module.add_function(kernel_name(), args, ret, "public")
 
-    recur_expr_to_ttir(expr, builder, module, function)
+    recur_expr_to_ttir(expr, builder, module)
   end
 
-  defp recur_expr_to_ttir(%Expr{op: :arange, opts: [low: low, high: high]}, builder, module, function) do
+  defp recur_expr_to_ttir(%Expr{op: :arange, opts: [low: low, high: high]}, builder, module) do
     Value.make_range_op(builder, low, high)
   end
 
