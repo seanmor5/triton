@@ -3,6 +3,7 @@ defmodule Triton.MLIR.Module do
 
   alias Triton.MLIR.Function
   alias Triton.MLIR.Module
+  alias Triton.MLIR.Builder
 
   def add_function(
         %Module{ref: module_ref, builder: builder, functions: funcs} = module,
