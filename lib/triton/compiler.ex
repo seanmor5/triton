@@ -17,7 +17,7 @@ defmodule Triton.Compiler do
     arg_types = Enum.map(List.wrap(Typespec.tensor({1, 1}, {:s, 8})), &Typespec.to_charlist/1)
     ret_types = Enum.map(List.wrap(Typespec.tensor({1, 1}, {:s, 8})), &Typespec.to_charlist/1)
 
-    Triton.NIF.create_function(builder.ref, module.ref, kernel_name(), )
+    Triton.NIF.create_function(builder.ref, module.ref, kernel_name(), arg_types, ret_types, true, false)
 
     # recur_expr_to_ttir(expr, builder, module, function)
   end
