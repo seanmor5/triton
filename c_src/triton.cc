@@ -340,7 +340,7 @@ ADD_PASS_WRAPPER_0(common_add_licm, mlir::createLoopInvariantCodeMotionPass);
 ADD_PASS_WRAPPER_0(ttir_add_combine, mlir::triton::createCombineOpsPass);
 ADD_PASS_WRAPPER_0(ttir_add_reorder_broadcast, mlir::triton::createReorderBroadcastPass);
 ADD_PASS_WRAPPER_0(ttir_add_rewrite_tensor_pointer, mlir::triton::createRewriteTensorPointerPass);
-ADD_PASS_WRAPPER_0(ttir_add_loop_unroll, mlir::triton::createLoopUnrollPass);
+// ADD_PASS_WRAPPER_0(ttir_add_loop_unroll, mlir::triton::createLoopUnrollPass);
 // ADD_PASS_WRAPPER_4("add_convert_to_ttgpuir",
 //                    createConvertTritonToTritonGPUPass, const std::string &,
 //                    int, int, int);
@@ -358,7 +358,7 @@ ADD_PASS_WRAPPER_0(ttgpuir_add_remove_layout_conversions, mlir::triton::gpu::cre
 ADD_PASS_WRAPPER_0(ttgpuir_add_reduce_data_duplication, mlir::triton::gpu::createTritonGPUReduceDataDuplication);
 ADD_PASS_WRAPPER_0(ttgpuir_add_allocate_shared_memory, mlir::triton::gpu::createAllocateSharedMemoryPass);
 ADD_PASS_WRAPPER_0(ttgpuir_add_combine_tensor_select_and_if, mlir::triton::gpu::createTritonGPUCombineTensorSelectAndIf);
-ADD_PASS_WRAPPER_0(ttgpuir_add_optimize_accumulator_init, mlir::triton::gpu::createTritonGPUOptimizeAccumulatorInit);
+// ADD_PASS_WRAPPER_0(ttgpuir_add_optimize_accumulator_init, mlir::triton::gpu::createTritonGPUOptimizeAccumulatorInit);
 
 // convert
 ADD_PASS_WRAPPER_0(convert_add_scf_to_cf, mlir::createConvertSCFToCFPass);
@@ -437,7 +437,7 @@ static ErlNifFunc triton_funcs[] = {
   {"ttir_add_combine", 1, ttir_add_combine},
   {"ttir_add_reorder_broadcast", 1, ttir_add_reorder_broadcast},
   {"ttir_add_rewrite_tensor_pointer", 1, ttir_add_rewrite_tensor_pointer},
-  {"ttir_add_loop_unroll", 1, ttir_add_loop_unroll},
+  // {"ttir_add_loop_unroll", 1, ttir_add_loop_unroll},
   {"ttgpuir_add_coalesce", 1, ttgpuir_add_coalesce},
   {"ttgpuir_add_optimize_thread_locality", 1, ttgpuir_add_optimize_thread_locality},
   {"ttgpuir_add_prefetch", 1, ttgpuir_add_prefetch},
@@ -448,7 +448,7 @@ static ErlNifFunc triton_funcs[] = {
   {"ttgpuir_add_reduce_data_duplication", 1, ttgpuir_add_reduce_data_duplication},
   {"ttgpuir_add_allocate_shared_memory", 1, ttgpuir_add_allocate_shared_memory},
   {"ttgpuir_add_combine_tensor_select_and_if", 1, ttgpuir_add_combine_tensor_select_and_if},
-  {"ttgpuir_add_optimize_accumulator_init", 1, ttgpuir_add_optimize_accumulator_init},
+  // {"ttgpuir_add_optimize_accumulator_init", 1, ttgpuir_add_optimize_accumulator_init},
   {"convert_add_scf_to_cf", 1, convert_add_scf_to_cf},
   {"convert_add_cf_to_llvmir", 1, convert_add_cf_to_llvmir},
   {"convert_add_index_to_llvmir", 1, convert_add_index_to_llvmir},
