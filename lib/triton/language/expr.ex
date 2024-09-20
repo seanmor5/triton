@@ -4,7 +4,9 @@ defmodule Triton.Language.Expr do
   defstruct [
     :op,
     :args,
-    :opts
+    :opts,
+    :shape,
+    :type
   ]
 
   def parameter(key) do

@@ -5,6 +5,7 @@ defmodule Triton.Compiler do
 
   alias Triton.MLIR.Builder
   alias Triton.MLIR.Module
+  alias Triton.MLIR.Typespec
 
   def compile(fun, args, opts \\ []) when is_function(opts) do
     params = for {_, i} <- Enum.with_index(args), do: Expr.parameter("arg#{i}")
@@ -12,10 +13,13 @@ defmodule Triton.Compiler do
 
     builder = Builder.new()
     module = Builder.create_module(builder)
-    # TODO: Args
-    function = Builder.create_function(module, kernel_name())
 
-    recur_expr_to_ttir(expr, builder, module, function)
+    arg_types = Enum.map(List.wrap(Typespec.tensor({1, 1}, {:s, 8})), &Typespec.to_charlist/1)
+    ret_types = Enum.map(List.wrap(Typespec.tensor({1, 1}, {:s, 8})), &Typespec.to_charlist/1)
+
+    Triton.NIF.create_function(builder.ref, module.ref, kernel_name(), )
+
+    # recur_expr_to_ttir(expr, builder, module, function)
   end
 
   defp recur_expr_to_ttir(%Expr{op: :constant, opts: [value: value]}, builder, module, function) do
