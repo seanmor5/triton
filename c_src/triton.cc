@@ -191,7 +191,7 @@ ERL_NIF_TERM create_function(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[
   for (auto const& type_string : arg_type_strings) {
     auto type = (*builder)->parseType(type_string);
     if (type == nullptr) {
-      return type_parsing_error(env, type_string);
+      return nif::error(env, "Unable to parse type");
     }
     arg_types.push_back(type);
   }
@@ -201,7 +201,7 @@ ERL_NIF_TERM create_function(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[
   for (auto const& type_string : ret_type_strings) {
     auto type = (*builder)->parseType(type_string);
     if (type == nullptr) {
-      return type_parsing_error(env, type_string);
+      return nif::error(env, "Unable to parse type");
     }
     ret_types.push_back(type);
   }
@@ -213,7 +213,7 @@ ERL_NIF_TERM create_function(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[
    mlir::NamedAttribute(
        (*builder)->getBuilder().getStringAttr("sym_visibility"),
        (*builder)->getBuilder().getStringAttr(visibility)),
-   mlir::NamedAttribute(self.getBuilder().getStringAttr("noinline"),
+   mlir::NamedAttribute((*builder)->getBuilder().getStringAttr("noinline"),
                   (*builder)->getBuilder().getBoolAttr(noinline))};
 
   auto func_op = (*builder)->create<mlir::FuncOp>(func_name, func_type, attrs);
