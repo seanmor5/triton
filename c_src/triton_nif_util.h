@@ -4,6 +4,7 @@
 #include "erl_nif.h"
 
 #include <memory>
+#include <vector>
 
 namespace nif {
 // Helper for returning `{:error, msg}` from NIF.
