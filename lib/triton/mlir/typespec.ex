@@ -9,20 +9,20 @@ defmodule Triton.MLIR.Typespec do
     struct(__MODULE__, shape: children, type: :tuple)
   end
 
-  def to_string(%__MODULE__{shape: children, type: :tuple}) when is_list(children) do
+  def type_to_string(%__MODULE__{shape: children, type: :tuple}) when is_list(children) do
     children = Enum.map_join(children, ", ", &to_string/1)
     "tuple<#{children}>"
   end
 
-  def to_string(%__MODULE__{shape: shape, type: type}) do
+  def type_to_string(%__MODULE__{shape: shape, type: type}) do
     shape_sequence = shape |> Tuple.to_list() |> Enum.map_join("", &"#{&1}x")
     "tensor<#{shape_sequence}#{type_number(type)}>"
   end
 
-  def to_charlist(mod) do
+  def encode(mod) do
     mod
-    |> __MODULE__.to_string()
-    |> Kernel.to_charlist()
+    |> type_to_string()
+    |> to_charlist()
   end
 
   defp type_number({:pred, 8}), do: "i1"

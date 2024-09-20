@@ -14,8 +14,8 @@ defmodule Triton.Compiler do
     builder = Builder.new()
     module = Builder.create_module(builder)
 
-    arg_types = Enum.map(List.wrap(Typespec.tensor({1, 1}, {:s, 8})), &Typespec.to_charlist/1)
-    ret_types = Enum.map(List.wrap(Typespec.tensor({1, 1}, {:s, 8})), &Typespec.to_charlist/1)
+    arg_types = Enum.map(List.wrap(Typespec.tensor({1, 1}, {:s, 8})), &Typespec.encode/1)
+    ret_types = Enum.map(List.wrap(Typespec.tensor({1, 1}, {:s, 8})), &Typespec.encode/1)
 
     Triton.NIF.create_function(builder.ref, module.ref, kernel_name(), arg_types, ret_types, true, false)
 
