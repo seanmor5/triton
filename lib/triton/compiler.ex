@@ -19,7 +19,6 @@ defmodule Triton.Compiler do
   end
 
   defp recur_expr_to_ttir(%Expr{op: :constant, opts: [value: value]}, builder, module, function) do
-    
   end
 
   defp kernel_name, do: "triton_kernel_#{System.os_time()}"

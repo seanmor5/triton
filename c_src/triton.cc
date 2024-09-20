@@ -41,6 +41,9 @@ static int open_resources(ErlNifEnv* env) {
   if (!nif::open_resource<mlir::ModuleOp>(env, mod, "mlir::ModuleOp")) {
     return -1;
   }
+  if (!nif::open_resource<mlir::FuncOp>(env, mod, "mlir::FuncOp")) {
+    return -1;
+  }
   if (!nif::open_resource<mlir::Value>(env, mod, "mlir::Value")) {
     return -1;
   }
@@ -135,7 +138,7 @@ ERL_NIF_TERM create_triton_op_builder(ErlNifEnv * env, int argc, const ERL_NIF_T
 
 ERL_NIF_TERM create_module(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
   if (argc != 1) {
-    return nif::error(env, "Unable to get Triton op builder.");
+    return nif::error(env, "Bad argument count.");
   }
 
   TritonOpBuilder** builder;
@@ -146,6 +149,75 @@ ERL_NIF_TERM create_module(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[])
 
   mlir::ModuleOp module = (*builder)->create<mlir::ModuleOp>();
   return nif::ok(env, nif::make<mlir::ModuleOp>(env, module));
+}
+
+ERL_NIF_TERM create_function(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 7) {
+    return nif::error(env, "Bad argument count.");
+  }
+
+  TritonOpBuilder** builder;
+  mlir::ModuleOp* module;
+  std::string func_name;
+  std::vector<std::string> arg_type_strings;
+  std::vector<std::string> ret_type_strings;
+  bool is_public;
+  bool noinline;
+
+  if (!nif::get<TritonOpBuilder*>(env, argv[0], builder)) {
+    return nif::error(env, "Unable to get builder.");
+  }
+  if (!nif::get<mlir::Module>(env, argv[1], module)) {
+    return nif::error(env, "Unable to get module.");
+  }
+  if (!nif::get(env, argv[2], func_name)) {
+    return nif::error(env, "Unable to get function name.");
+  }
+  if (!nif::get_list(env, argv[3], arg_type_strings)) {
+    return nif::error(env, "Unable to get args.");
+  }
+  if (!nif::get_list(env, argv[4], ret_type_strings)) {
+    return nif::error(env, "Unable to get return.");
+  }
+  if (!nif::get(env, argv[5], &is_public)) {
+    return nif::error(env, "Unable to get is_public.");
+  }
+  if (!nif::get(env, argv[6], &noinline)) {
+    return nif::error(env, "Unable to get noinline.");
+  }
+
+  auto arg_types = std::vector<mlir::Type>{};
+
+  for (auto const& type_string : arg_type_strings) {
+    auto type = (*builder)->parseType(type_string);
+    if (type == nullptr) {
+      return type_parsing_error(env, type_string);
+    }
+    arg_types.push_back(type);
+  }
+
+  auto ret_types = std::vector<mlir::Type>{};
+
+  for (auto const& type_string : ret_type_strings) {
+    auto type = (*builder)->parseType(type_string);
+    if (type == nullptr) {
+      return type_parsing_error(env, type_string);
+    }
+    ret_types.push_back(type);
+  }
+
+  auto visibility = is_public ? "public" : "private";
+  auto func_type = (*builder)->getBuilder().getFunctionType(arg_types, return_types);
+
+ llvm::SmallVector<NamedAttribute> attrs = {
+   mlir::NamedAttribute(
+       (*builder)->getBuilder().getStringAttr("sym_visibility"),
+       (*builder)->getBuilder().getStringAttr(visibility)),
+   mlir::NamedAttribute(self.getBuilder().getStringAttr("noinline"),
+                  (*builder)->getBuilder().getBoolAttr(noinline))};
+
+  auto func_op = (*builder)->create<mlir::FuncOp>(func_name, func_type, attrs);
+  return nif::ok(env, nif::make<mlir::FuncOp>(env, func_op));
 }
 
 // Ops
@@ -176,6 +248,7 @@ static ErlNifFunc triton_funcs[] = {
   {"create_mlir_context", 1, create_mlir_context},
   {"create_triton_op_builder", 1, create_triton_op_builder},
   {"create_module", 1, create_module},
+  {"create_function", 7, create_function},
   // Ops
   {"get_int1", 2, get_int1}
 };

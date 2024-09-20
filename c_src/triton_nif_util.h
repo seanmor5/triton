@@ -18,6 +18,9 @@ ERL_NIF_TERM ok(ErlNifEnv* env);
 int get(ErlNifEnv* env, ERL_NIF_TERM term, int* var);
 
 int get(ErlNifEnv* env, ERL_NIF_TERM term, bool* var);
+int get(ErlNifEnv* env, ERL_NIF_TERM term, std::string& var);
+
+int get_list(ErlNifEnv* env, ERL_NIF_TERM, std::vector<std::string>& var);
 
   // Template struct for resources. The struct lets us use templates
 // to store and retrieve open resources later on. This implementation

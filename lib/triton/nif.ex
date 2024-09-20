@@ -13,5 +13,16 @@ defmodule Triton.NIF do
 
   def create_module(_builder), do: :erlang.nif_error(:undef)
 
+  def create_function(
+        _builder,
+        _module,
+        _name,
+        _argument_types,
+        _return_types,
+        _visibility,
+        _noinline
+      ),
+      do: :erlang.nif_error(:undef)
+
   def get_int1(_builder, _value), do: :erlang.nif_error(:undef)
 end

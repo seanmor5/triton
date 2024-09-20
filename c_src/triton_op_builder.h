@@ -38,6 +38,8 @@ public:
 
   bool isLineInfoEnabled() { return lineInfoEnabled; }
 
+  mlir::Type parseType(std::string string) { return mlir::parseType(string, builder->getContext()); }
+
   mlir::Location getLastLoc() {
     assert(lastLoc);
     return *lastLoc;
