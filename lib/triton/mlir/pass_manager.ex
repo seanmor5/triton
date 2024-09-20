@@ -1,6 +1,8 @@
 defmodule Triton.MLIR.PassManager do
   @moduledoc false
 
+  alias Triton.MLIR.Module
+
   defstruct [:ref, :context]
 
   def new(context) do
@@ -10,6 +12,10 @@ defmodule Triton.MLIR.PassManager do
       |> unwrap!()
 
     struct(__MODULE__, ref: ref, context: context)
+  end
+
+  def run(%PassManager{ref: pm_ref}, %Module{ref: mod_ref}) do
+    
   end
 
   defp unwrap!({:ok, val}), do: val

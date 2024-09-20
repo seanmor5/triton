@@ -35,6 +35,7 @@ defmodule Triton.NIF do
   # Passes
 
   def create_pass_manager(_context), do: :erlang.nif_error(:undef)
+  def run_pass_manager(_pass_manager, _module), do: :erlang.nif_error(:undef)
 
   @passes [
     :common_add_sccp,

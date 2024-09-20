@@ -328,6 +328,73 @@ ERL_NIF_TERM create_pass_manager(ErlNifEnv * env, int argc, const ERL_NIF_TERM a
   return nif::ok(env, nif::make<mlir::PassManager*>(env, pass_manager));
 }
 
+ERL_NIF_TERM run_pass_manager(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 2) {
+    return nif::error(env, "Bad argument count.");
+  }
+
+  mlir::PassManager** pass_manager;
+  mlir::ModuleOp* module;
+
+  if (!nif::get<mlir::PassManager*>(env, argv[0], pass_manager)) {
+    return nif::error(env, "Unable to get pass manager.");
+  }
+  if (!nif::get<mlir::ModuleOp>(env, argv[1], module)) {
+    return nif::error(env, "Unable to get module.");
+  }
+
+  try {
+    // Handle TRITON_REPRODUCER_PATH
+    std::string reproducerPath = triton::tools::getStrEnv("TRITON_REPRODUCER_PATH");
+    if (!reproducerPath.empty()) {
+      // Assuming makeReproducer is defined elsewhere
+      // makeReproducer(pass_manager->getOpAnchorName(), pass_manager->getPasses(), 
+      //                module.getOperation(), reproducerPath);
+    }
+
+    // Handle TRITON_ENABLE_LLVM_DEBUG
+    if (triton::tools::getStrEnv("TRITON_ENABLE_LLVM_DEBUG") == "true") {
+      llvm::DebugFlag = true;
+    }
+
+    // Handle TRITON_LLVM_DEBUG_ONLY
+    std::string debugOnly = triton::tools::getStrEnv("TRITON_LLVM_DEBUG_ONLY");
+    if (!debugOnly.empty()) {
+      std::vector<std::string> debugTypes;
+      size_t pos = 0;
+      std::string token;
+      while ((pos = debugOnly.find(',')) != std::string::npos) {
+        token = debugOnly.substr(0, pos);
+        debugTypes.push_back(token);
+        debugOnly.erase(0, pos + 1);
+      }
+      debugTypes.push_back(debugOnly);
+
+      std::vector<const char*> debugTypesChar;
+      for (const auto& type : debugTypes) {
+        debugTypesChar.push_back(type.c_str());
+      }
+
+      llvm::DebugFlag = true;
+      llvm::setCurrentDebugTypes(debugTypesChar.data(), debugTypesChar.size());
+    }
+
+    // Handle MLIR_ENABLE_TIMING
+    if (triton::tools::getStrEnv("MLIR_ENABLE_TIMING") == "true") {
+      pass_manager->enableTiming();
+    }
+
+    // Run the pass manager
+    if (mlir::failed(pass_manager->run((*module).getOperation()))) {
+      throw std::runtime_error("PassManager::run failed");
+    }
+
+    return nif::ok(env);
+  } catch (const std::exception& e) {
+    return nif::error(env, e.what());
+  }
+}
+
 // common
 ADD_PASS_WRAPPER_0(common_add_sccp, mlir::createSCCPPass);
 ADD_PASS_WRAPPER_0(common_add_symbol_dce, mlir::createSymbolDCEPass);
@@ -428,6 +495,7 @@ static ErlNifFunc triton_funcs[] = {
   {"module_to_string", 1, module_to_string},
   // Passes
   {"create_pass_manager", 1, create_pass_manager},
+  {"run_pass_manager", 2, run_pass_manager},
   {"common_add_sccp", 1, common_add_sccp},
   {"common_add_symbol_dce", 1, common_add_symbol_dce},
   {"common_add_inliner", 1, common_add_inliner},
