@@ -73,4 +73,5 @@ defmodule Triton.NIF do
   def get_int1(_builder, _value), do: :erlang.nif_error(:undef)
 
   def make_range_op(_builder, _low, _high), do: :erlang.nif_error(:undef)
+  def return_op(_builder), do: :erlang.nif_error(:undef)
 end

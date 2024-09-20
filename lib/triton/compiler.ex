@@ -25,6 +25,7 @@ defmodule Triton.Compiler do
       |> Module.add_function(kernel_name(), args, ret, "public")
 
     _result = recur_expr_to_ttir(expr, builder, module)
+    :ok = 
 
     module
     |> NVidia.compile_stage(:ttir, %{}, [])

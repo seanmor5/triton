@@ -23,6 +23,11 @@ defmodule Triton.MLIR.Module do
     %{module | functions: Map.put(funcs, name, func)}
   end
 
+  def finalize(%Module{builder: %{ref: builder_ref}} = mod) do
+    :ok = Triton.NIF.return_op(builder_ref)
+    mod    
+  end
+
   def module_to_string(%Module{ref: module_ref}) do
     module_ref
     |> Triton.NIF.module_to_string()
