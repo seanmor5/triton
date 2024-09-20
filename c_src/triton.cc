@@ -238,7 +238,8 @@ ERL_NIF_TERM push_function(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[])
     return nif::error(env, "Unable to get function.");
   }
 
-  (*module)->getBody()->push_back(*function);
+  auto mod = static_cast<mlir::ModuleOp>(*module);
+  mod.push_back(*function);
   return nif::ok(env);
 }
 
