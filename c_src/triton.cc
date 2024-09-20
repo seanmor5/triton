@@ -41,7 +41,7 @@ static int open_resources(ErlNifEnv* env) {
   if (!nif::open_resource<mlir::ModuleOp>(env, mod, "mlir::ModuleOp")) {
     return -1;
   }
-  if (!nif::open_resource<triton::FuncOp>(env, mod, "triton::FuncOp")) {
+  if (!nif::open_resource<mlir::triton::FuncOp>(env, mod, "mlir::triton::FuncOp")) {
     return -1;
   }
   if (!nif::open_resource<mlir::Value>(env, mod, "mlir::Value")) {
@@ -216,8 +216,8 @@ ERL_NIF_TERM create_function(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[
    mlir::NamedAttribute((*builder)->getBuilder().getStringAttr("noinline"),
                   (*builder)->getBuilder().getBoolAttr(noinline))};
 
-  auto func_op = (*builder)->create<triton::FuncOp>(func_name, func_type, attrs);
-  return nif::ok(env, nif::make<triton::FuncOp>(env, func_op));
+  auto func_op = (*builder)->create<mlir::triton::FuncOp>(func_name, func_type, attrs);
+  return nif::ok(env, nif::make<mlir::triton::FuncOp>(env, func_op));
 }
 
 // Ops
