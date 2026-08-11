@@ -1,45 +1,30 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index ca0a4f7f7..cb707f9cf 100644
+index 3d5c8359a8..121173c6be 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -24,9 +24,12 @@ endif()
- # Options
- option(TRITON_BUILD_TUTORIALS "Build C++ Triton tutorials" ON)
+@@ -19,12 +19,14 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+ ################################################################################
+ 
  option(TRITON_BUILD_PYTHON_MODULE "Build Python Triton bindings" OFF)
 +option(TRITON_BUILD_ELIXIR_MODULE "Build Elixir Triton bindings" OFF)
  option(TRITON_BUILD_PROTON "Build the Triton Proton profiler" ON)
  option(TRITON_BUILD_UT "Build C++ Triton Unit Tests" ON)
-+
+ option(TRITON_BUILD_WITH_CCACHE "Build with ccache (if available)" ON)
+ option(TRITON_OFFLINE_BUILD "Build without downloading dependencies" OFF)
+ option(TRITON_EXT_ENABLED "Build with default visibility for Triton+LLVM symbol exposure to plugin extensions" OFF)
  set(TRITON_CODEGEN_BACKENDS "" CACHE STRING "Enable different codegen backends")
 +set(ERTS_INCLUDE_DIR "" CACHE PATH "Path to the Erlang Run-Time System (ERTS) include directory")
+ set(TRITON_VERSION "" CACHE STRING "Triton version string (passed from setup.py)")
  
- # Ensure Python3 vars are set correctly
- # used conditionally in this file and by lit tests
-@@ -267,6 +270,122 @@ if(TRITON_BUILD_PYTHON_MODULE)
-   target_link_options(triton PRIVATE ${LLVM_LDFLAGS})
+ set(TRITON_CACHE_PATH "" CACHE PATH "Path to triton cache")
+@@ -481,6 +483,129 @@ if(TRITON_BUILD_PYTHON_MODULE)
+   endif()
  endif()
  
 +if(TRITON_BUILD_ELIXIR_MODULE)
 +  message(STATUS "Building Triton Elixir NIF")
 +
 +  include_directories(${ERTS_INCLUDE_DIR})
-+
-+  if (DEFINED TRITON_PLUGIN_DIRS)
-+    foreach(PLUGIN_DIR ${TRITON_PLUGIN_DIRS})
-+      # Read the plugin name under dir/backend/name.conf
-+      cmake_path(APPEND PLUGIN_DIR "backend" "name.conf" OUTPUT_VARIABLE PLUGIN_NAME_PATH)
-+      file(READ ${PLUGIN_NAME_PATH} PLUGIN_NAME)
-+      string(STRIP ${PLUGIN_NAME} PLUGIN_NAME)
-+
-+      list(APPEND TRITON_PLUGIN_NAMES ${PLUGIN_NAME})
-+
-+      # Include the plugin as part of the build, placing the build output under
-+      # ${TRITON_BINARY_DIR}/third_party/${PLUGIN_NAME}
-+      cmake_path(APPEND TRITON_BINARY_DIR "third_party" ${PLUGIN_NAME} OUTPUT_VARIABLE PLUGIN_DIR_BUILD_OUTPUT)
-+      message(STATUS "Building plugin '${PLUGIN_NAME}' from ${PLUGIN_DIR} with output ${PLUGIN_DIR_BUILD_OUTPUT}")
-+      add_subdirectory(${PLUGIN_DIR} ${PLUGIN_DIR_BUILD_OUTPUT})
-+    endforeach()
-+  endif()
 +
 +  foreach(CODEGEN_BACKEND ${TRITON_CODEGEN_BACKENDS})
 +    add_subdirectory(third_party/${CODEGEN_BACKEND})
@@ -48,6 +33,9 @@ index ca0a4f7f7..cb707f9cf 100644
 +  if (TRITON_BUILD_PROTON)
 +    add_subdirectory(third_party/proton)
 +  endif()
++  # We always build proton dialect
++  list(APPEND TRITON_PLUGIN_NAMES "proton")
++  add_subdirectory(third_party/proton/Dialect)
 +
 +  get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
 +  get_property(triton_plugins GLOBAL PROPERTY TRITON_PLUGINS)
@@ -57,6 +45,8 @@ index ca0a4f7f7..cb707f9cf 100644
 +
 +    # mlir
 +    MLIRAMDGPUDialect
++    MLIRArithDialect
++    MLIRArithToLLVM
 +    MLIRNVVMDialect
 +    MLIRNVVMToLLVMIRTranslation
 +    MLIRGPUToNVVMTransforms
@@ -68,22 +58,31 @@ index ca0a4f7f7..cb707f9cf 100644
 +    MLIRPass
 +    MLIRTransforms
 +    MLIRLLVMDialect
++    MLIRMathDialect
 +    MLIRSupport
 +    MLIRTargetLLVMIRExport
 +    MLIRMathToLLVM
++    MLIRTensorDialect
 +    MLIRROCDLToLLVMIRTranslation
 +    MLIRGPUDialect
++    MLIRSCFDialect
 +    MLIRSCFToControlFlow
 +    MLIRIndexToLLVM
++    MLIRUBDialect
 +    MLIRGPUToROCDLTransforms
 +
 +    # LLVM
 +    LLVMPasses
 +    LLVMNVPTXCodeGen
-+    # LLVMNVPTXAsmPrinter
 +    LLVMAMDGPUCodeGen
 +    LLVMAMDGPUAsmParser
-+
++  )
++  list(APPEND TRITON_LIBRARIES
++    TritonNVIDIAGPUToLLVM
++    TritonNvidiaGPUTransforms
++    TritonNvidiaGPUIR
++    NVGPUToLLVM
++    NVGPUIR
 +  )
 +  if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR # Linux arm64
 +     CMAKE_SYSTEM_PROCESSOR MATCHES "arm64" OR # macOS arm64
@@ -106,7 +105,6 @@ index ca0a4f7f7..cb707f9cf 100644
 +    message(FATAL_ERROR "LLVM codegen/ASM parser libs: This HW architecture (${CMAKE_SYSTEM_PROCESSOR}) is not configured in cmake lib dependencies.")
 +  endif()
 +
-+  # Define triton library
 +  string(JOIN "," TRITON_BACKENDS_TUPLE ${TRITON_CODEGEN_BACKENDS})
 +
 +  if (DEFINED TRITON_PLUGIN_NAMES)
@@ -121,8 +119,10 @@ index ca0a4f7f7..cb707f9cf 100644
 +    elixir/triton.cc
 +    elixir/triton_nif_util.cc
 +    elixir/triton_op_builder.cc
++    elixir/triton_cuda.cc
 +    elixir/triton_nif_util.h
-+    elixir/triton_op_builder.h)
++    elixir/triton_op_builder.h
++    elixir/triton_cuda.h)
 +
 +  # Link triton with its dependencies
 +  target_link_libraries(triton PUBLIC ${TRITON_LIBRARIES})
@@ -130,33 +130,34 @@ index ca0a4f7f7..cb707f9cf 100644
 +  if(WIN32)
 +    target_link_libraries(triton PUBLIC ${CMAKE_DL_LIBS})
 +  else()
-+    target_link_libraries(triton PUBLIC z)
++    target_link_libraries(triton PUBLIC z ${CMAKE_DL_LIBS})
 +  endif()
 +  target_link_options(triton PUBLIC ${LLVM_LDFLAGS})
 +endif()
 +
- if (UNIX AND NOT APPLE)
-   set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,ALL")
- endif()
-@@ -282,15 +401,27 @@ if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
-   target_link_libraries(triton PRIVATE ${PYTHON_LDFLAGS})
- endif()
- 
--if(NOT TRITON_BUILD_PYTHON_MODULE)
 +if(TRITON_BUILD_ELIXIR_MODULE AND NOT WIN32)
 +  set(CMAKE_SHARED_LIBRARY_SUFFIX ".so")
 +
 +  # Check if the platform is MacOS
 +  if(APPLE)
-+    set(PYTHON_LDFLAGS "-undefined dynamic_lookup")
++    target_link_options(triton PRIVATE "-undefined" "dynamic_lookup")
 +  endif()
 +endif()
 +
+ if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
+   set(CMAKE_SHARED_LIBRARY_SUFFIX ".so")
+ 
+@@ -492,7 +617,7 @@ if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
+   target_link_options(triton PRIVATE ${PYTHON_LDFLAGS})
+ endif()
+ 
+-if(NOT TRITON_BUILD_PYTHON_MODULE)
 +if(NOT TRITON_BUILD_PYTHON_MODULE AND NOT TRITON_BUILD_ELIXIR_MODULE)
    foreach(CODEGEN_BACKEND ${TRITON_CODEGEN_BACKENDS})
      add_subdirectory(third_party/${CODEGEN_BACKEND})
    endforeach()
- endif()
+@@ -502,8 +627,11 @@ endif()
+ find_package(Threads REQUIRED)
  
  add_subdirectory(third_party/f2reduce)
 -add_subdirectory(bin)

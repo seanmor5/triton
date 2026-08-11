@@ -1,7 +1,11 @@
 #ifndef TRITON_OP_BUILDER_H_
 #define TRITON_OP_BUILDER_H_
 
+#include <cassert>
 #include <memory>
+#include <string>
+#include <type_traits>
+#include <utility>
 
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"

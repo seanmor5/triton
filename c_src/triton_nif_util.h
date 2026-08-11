@@ -1,9 +1,12 @@
 #ifndef TRITON_NIF_UTIL_H_
-#define TRTION_NIF_UTIL_H_
+#define TRITON_NIF_UTIL_H_
 
 #include "erl_nif.h"
 
 #include <memory>
+#include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace nif {
@@ -21,9 +24,17 @@ int get(ErlNifEnv* env, ERL_NIF_TERM term, int* var);
 int get(ErlNifEnv* env, ERL_NIF_TERM term, bool* var);
 int get(ErlNifEnv* env, ERL_NIF_TERM term, std::string& var);
 
-int get_list(ErlNifEnv* env, ERL_NIF_TERM, std::vector<std::string>& var);
+int get_list(ErlNifEnv* env, ERL_NIF_TERM term, std::vector<std::string>& var);
 
-  // Template struct for resources. The struct lets us use templates
+// Looks up `key` in an Elixir keyword list; returns 1 and sets value_out when
+// found.
+int get_keyword(ErlNifEnv* env, ERL_NIF_TERM list, const char* key,
+                ERL_NIF_TERM* value_out);
+
+// Returns a proper Elixir binary (make/1 with std::string returns a charlist).
+ERL_NIF_TERM make_binary(ErlNifEnv* env, const std::string& var);
+
+// Template struct for resources. The struct lets us use templates
 // to store and retrieve open resources later on. This implementation
 // is the same as the approach taken in the goertzenator/nifpp
 // C++11 wrapper around the Erlang NIF API.
@@ -34,14 +45,34 @@ struct resource_object {
 template <typename T>
 ErlNifResourceType* resource_object<T>::type = 0;
 
+template <typename T, bool IsPointer = std::is_pointer<T>::value>
+struct resource_destructor {
+  static void destroy(T* resource) {
+    resource->~T();
+  }
+};
+
+template <typename T>
+struct resource_destructor<T, true> {
+  static void destroy(T* resource) {
+    delete *resource;
+    *resource = nullptr;
+  }
+};
+
 // Default destructor passed when opening a resource. The default
 // behavior is to invoke the underlying objects destructor and
 // set the resource pointer to NULL.
 template <typename T>
 void default_dtor(ErlNifEnv* env, void* obj) {
   T* resource = reinterpret_cast<T*>(obj);
-  resource->~T();
-  resource = nullptr;
+  resource_destructor<T>::destroy(resource);
+}
+
+template <typename T>
+void borrowed_dtor(ErlNifEnv* env, void* obj) {
+  (void)(env);
+  (void)(obj);
 }
 
 // Opens a resource for the given template type T. If no
@@ -69,10 +100,33 @@ int open_resource(ErlNifEnv* env,
 
 // Returns a resource of the given template type T.
 template <typename T>
-ERL_NIF_TERM get(ErlNifEnv* env, ERL_NIF_TERM term, T*& var) {
+int get(ErlNifEnv* env, ERL_NIF_TERM term, T*& var) {
   return enif_get_resource(env, term,
                            resource_object<T>::type,
                            reinterpret_cast<void**>(&var));
+}
+
+template <typename T>
+int get_resource_list(ErlNifEnv* env, ERL_NIF_TERM list, std::vector<T>& var) {
+  unsigned int length;
+  if (!enif_get_list_length(env, list, &length)) {
+    return 0;
+  }
+
+  var.reserve(length);
+  ERL_NIF_TERM head;
+  ERL_NIF_TERM tail;
+
+  while (enif_get_list_cell(env, list, &head, &tail)) {
+    T* elem;
+    if (!get<T>(env, head, elem)) {
+      return 0;
+    }
+    var.push_back(*elem);
+    list = tail;
+  }
+
+  return 1;
 }
 
 // Creates a reference to the given resource of type T. We

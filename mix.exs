@@ -8,7 +8,7 @@ defmodule Triton.MixProject do
       elixir: "~> 1.16",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      compilers: [:elixir_make] ++ Mix.compilers()
+      compilers: native_compilers() ++ Mix.compilers()
     ]
   end
 
@@ -24,7 +24,22 @@ defmodule Triton.MixProject do
   defp deps do
     [
       {:elixir_make, "~> 0.4", runtime: false},
-      {:nimble_pool, "~> 1.0"}
+      {:nimble_pool, "~> 1.0"},
+      # Optional Nx integration: Triton.Nx, defn blocks, and EXLA custom calls
+      {:nx, "~> 0.12", optional: true}
     ]
+  end
+
+  defp native_compilers do
+    cond do
+      System.get_env("TRITON_SKIP_NATIVE") in ["1", "true"] ->
+        []
+
+      System.find_executable("cmake") == nil ->
+        []
+
+      true ->
+        [:elixir_make]
+    end
   end
 end

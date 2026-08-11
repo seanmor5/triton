@@ -1,5 +1,7 @@
 #include "triton_nif_util.h"
 
+#include <cstring>
+
 namespace nif {
 
 ERL_NIF_TERM error(ErlNifEnv* env, const char* msg) {
@@ -22,9 +24,23 @@ int get(ErlNifEnv* env, ERL_NIF_TERM term, int* var) {
 
 int get(ErlNifEnv* env, ERL_NIF_TERM term, bool* var) {
   int value;
-  if (!enif_get_int(env, term, &value)) return 0;
-  *var = static_cast<bool>(value);
-  return 1;
+  if (enif_get_int(env, term, &value)) {
+    *var = static_cast<bool>(value);
+    return 1;
+  }
+
+  char atom[8];
+  if (enif_get_atom(env, term, atom, sizeof(atom), ERL_NIF_LATIN1)) {
+    if (std::string(atom) == "true") {
+      *var = true;
+      return 1;
+    }
+    if (std::string(atom) == "false") {
+      *var = false;
+      return 1;
+    }
+  }
+  return 0;
 }
 
 int get(ErlNifEnv* env, ERL_NIF_TERM term, std::string& var) {
@@ -75,6 +91,32 @@ int get_list(ErlNifEnv* env, ERL_NIF_TERM list, std::vector<std::string>& var) {
 
 ERL_NIF_TERM make(ErlNifEnv* env, std::string var) {
   return enif_make_string(env, var.c_str(), ERL_NIF_LATIN1);
+}
+
+ERL_NIF_TERM make_binary(ErlNifEnv* env, const std::string& var) {
+  ERL_NIF_TERM term;
+  unsigned char* data = enif_make_new_binary(env, var.size(), &term);
+  std::memcpy(data, var.data(), var.size());
+  return term;
+}
+
+int get_keyword(ErlNifEnv* env, ERL_NIF_TERM list, const char* key,
+                ERL_NIF_TERM* value_out) {
+  ERL_NIF_TERM head, tail = list;
+  ERL_NIF_TERM key_atom = enif_make_atom(env, key);
+
+  while (enif_get_list_cell(env, tail, &head, &tail)) {
+    int arity;
+    const ERL_NIF_TERM* pair;
+    if (!enif_get_tuple(env, head, &arity, &pair) || arity != 2) {
+      continue;
+    }
+    if (enif_compare(pair[0], key_atom) == 0) {
+      *value_out = pair[1];
+      return 1;
+    }
+  }
+  return 0;
 }
 
 }

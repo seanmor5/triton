@@ -4,6 +4,13 @@ defmodule Triton.MLIR.ContextPool do
   @behaviour NimblePool
 
   def checkout(fun) when is_function(fun, 1) do
+    unless Process.whereis(__MODULE__) do
+      status = Triton.NIF.native_status()
+
+      raise RuntimeError,
+            "Triton MLIR context pool is not running (native_available?: #{inspect(Triton.NIF.native_available?())}, reason: #{inspect(status.reason)}, path: #{inspect(status.path)}, load_path: #{inspect(status.load_path)}); start the :triton application after the native MLIR/NIF layer is available"
+    end
+
     NimblePool.checkout!(
       __MODULE__,
       :checkout,
