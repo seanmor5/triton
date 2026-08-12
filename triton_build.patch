@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 3d5c8359a8..121173c6be 100644
+index 3d5c8359a..d16339bca 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -19,12 +19,14 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -17,7 +17,7 @@ index 3d5c8359a8..121173c6be 100644
  set(TRITON_VERSION "" CACHE STRING "Triton version string (passed from setup.py)")
  
  set(TRITON_CACHE_PATH "" CACHE PATH "Path to triton cache")
-@@ -481,6 +483,129 @@ if(TRITON_BUILD_PYTHON_MODULE)
+@@ -481,6 +483,131 @@ if(TRITON_BUILD_PYTHON_MODULE)
    endif()
  endif()
  
@@ -25,6 +25,8 @@ index 3d5c8359a8..121173c6be 100644
 +  message(STATUS "Building Triton Elixir NIF")
 +
 +  include_directories(${ERTS_INCLUDE_DIR})
++  include_directories(${PROJECT_SOURCE_DIR}/third_party/nvidia/include)
++  include_directories(${PROJECT_BINARY_DIR}/third_party/nvidia/include)
 +
 +  foreach(CODEGEN_BACKEND ${TRITON_CODEGEN_BACKENDS})
 +    add_subdirectory(third_party/${CODEGEN_BACKEND})
@@ -147,7 +149,7 @@ index 3d5c8359a8..121173c6be 100644
  if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
    set(CMAKE_SHARED_LIBRARY_SUFFIX ".so")
  
-@@ -492,7 +617,7 @@ if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
+@@ -492,7 +619,7 @@ if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
    target_link_options(triton PRIVATE ${PYTHON_LDFLAGS})
  endif()
  
@@ -156,7 +158,7 @@ index 3d5c8359a8..121173c6be 100644
    foreach(CODEGEN_BACKEND ${TRITON_CODEGEN_BACKENDS})
      add_subdirectory(third_party/${CODEGEN_BACKEND})
    endforeach()
-@@ -502,8 +627,11 @@ endif()
+@@ -502,8 +629,11 @@ endif()
  find_package(Threads REQUIRED)
  
  add_subdirectory(third_party/f2reduce)
@@ -170,3 +172,15 @@ index 3d5c8359a8..121173c6be 100644
  
  if(TRITON_BUILD_UT)
    add_subdirectory(unittest)
+diff --git a/third_party/proton/Dialect/lib/ProtonGPUToLLVM/CMakeLists.txt b/third_party/proton/Dialect/lib/ProtonGPUToLLVM/CMakeLists.txt
+index 3a568c218..93b805f04 100644
+--- a/third_party/proton/Dialect/lib/ProtonGPUToLLVM/CMakeLists.txt
++++ b/third_party/proton/Dialect/lib/ProtonGPUToLLVM/CMakeLists.txt
+@@ -13,4 +13,6 @@ add_triton_library(ProtonGPUToLLVM
+ )
+ 
+ add_subdirectory(ProtonNvidiaGPUToLLVM)
+-add_subdirectory(ProtonAMDGPUToLLVM)
++if("amd" IN_LIST TRITON_CODEGEN_BACKENDS)
++  add_subdirectory(ProtonAMDGPUToLLVM)
++endif()

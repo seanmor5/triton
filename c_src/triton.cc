@@ -32,6 +32,7 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 #include "mlir/Transforms/LocationSnapshot.h"
 #include "mlir/Transforms/Passes.h"
@@ -46,7 +47,7 @@
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
-#include "triton/Tools/Sys/GetEnv.hpp"
+#include "triton/Tools/Sys/GetEnv.h"
 #include "triton/Analysis/Membar.h"
 #include "triton/Conversion/TritonGPUToLLVM/Passes.h"
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
@@ -66,6 +67,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/IRReader/IRReader.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/OptimizationLevel.h"
@@ -811,7 +813,7 @@ ERL_NIF_TERM get_int1(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
     return nif::error(env, "Unable to get constant.");
   }
 
-  auto typed = (*builder)->create<mlir::arith::ConstantIntOp>(v, (*builder)->getBuilder().getI1Type());
+  auto typed = (*builder)->create<mlir::arith::ConstantIntOp>((*builder)->getBuilder().getI1Type(), v);
   mlir::Value ret(typed);
 
   return nif::ok(env, nif::make<mlir::Value>(env, ret));
@@ -871,6 +873,22 @@ static void init_nvptx_targets() {
     LLVMInitializeNVPTXTarget();
     LLVMInitializeNVPTXTargetMC();
     LLVMInitializeNVPTXAsmPrinter();
+    // The legacy codegen pipeline used by addPassesToEmitFile asserts that
+    // its required analysis passes are registered; llc does the same dance.
+    llvm::PassRegistry &registry = *llvm::PassRegistry::getPassRegistry();
+    llvm::initializeCore(registry);
+    llvm::initializeCodeGen(registry);
+    llvm::initializeLoopStrengthReducePass(registry);
+    llvm::initializeLowerIntrinsicsPass(registry);
+    llvm::initializeUnreachableBlockElimLegacyPassPass(registry);
+    llvm::initializeUnreachableMachineBlockElimLegacyPass(registry);
+    llvm::initializeScalarOpts(registry);
+    llvm::initializeVectorization(registry);
+    llvm::initializeScalarizeMaskedMemIntrinLegacyPassPass(registry);
+    llvm::initializeExpandReductionsPass(registry);
+    llvm::initializeHardwareLoopsLegacyPass(registry);
+    llvm::initializeTransformUtils(registry);
+    llvm::initializeTarget(registry);
     // Triton kernels produce small LLVM modules where pass-level parallelism
     // is not beneficial; LLVM's global thread pool is also not fork-safe.
     llvm::parallel::strategy = llvm::hardware_concurrency(1);

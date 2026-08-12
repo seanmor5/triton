@@ -42,12 +42,11 @@ defmodule Triton.MLIR.Module do
   end
 
   def verify(%Module{ref: module_ref} = mod) do
-    :ok =
-      module_ref
-      |> Triton.NIF.verify_module()
-      |> unwrap!()
-
-    mod
+    case Triton.NIF.verify_module(module_ref) do
+      :ok -> mod
+      {:ok, _} -> mod
+      {:error, reason} -> raise "#{reason}"
+    end
   end
 
   defp unwrap!({:ok, val}), do: val

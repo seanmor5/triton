@@ -26,7 +26,11 @@ defmodule Triton.MixProject do
       {:elixir_make, "~> 0.4", runtime: false},
       {:nimble_pool, "~> 1.0"},
       # Optional Nx integration: Triton.Nx, defn blocks, and EXLA custom calls
-      {:nx, "~> 0.12", optional: true}
+      {:nx, "~> 0.12", optional: true},
+      # Optional zero-copy GPU tensor interop and defn compilation
+      {:exla, "~> 0.13", optional: true},
+      # Property-based differential testing of kernels (interpreter vs GPU)
+      {:stream_data, "~> 1.1", only: [:dev, :test]}
     ]
   end
 
