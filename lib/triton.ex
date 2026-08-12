@@ -2837,6 +2837,13 @@ defmodule Triton do
     |> Kernel.launch(runtime_args, runtime_opts)
   end
 
+  @doc """
+  Wraps a kernel with a list of candidate configurations.
+
+  On the reference path the first configuration is used. For real
+  benchmarking-based tuning on the GPU — with all candidates compiled in
+  parallel on the BEAM — use `Triton.Autotuner.tune/4`.
+  """
   def autotune(fun, configs, opts \\ [])
 
   def autotune(fun, configs, opts) when is_function(fun) and is_list(configs) do

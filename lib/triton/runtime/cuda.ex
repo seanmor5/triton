@@ -195,6 +195,129 @@ defmodule Triton.Runtime.CUDA do
           "expected Triton native plan, got #{inspect(if(is_map(plan), do: Map.get(plan, :stage), else: nil))}"
   end
 
+  @doc """
+  Benchmarks a native plan on the GPU.
+
+  Loads the kernel and uploads arguments once, then times batches of
+  back-to-back launches with a single device synchronization per batch
+  (similar to `triton.testing.do_bench`). Argument uploads and downloads are
+  excluded from the timing.
+
+  Options:
+
+    * `:grid` / `:device` - as in `launch/3`
+    * `:warmup` - warmup launches before timing (default 25)
+    * `:reps` - launches per timed batch (default 100)
+    * `:rounds` - timed batches; the fastest is reported (default 5)
+    * `:flush_l2` - zero a 128 MiB device buffer between launches so each
+      launch sees a cold L2 cache, like `triton.testing.do_bench`; the flush
+      cost itself is measured separately and subtracted (default true)
+
+  Returns `{:ok, %{avg_ms: ..., rounds_ms: [...], reps: ..., grid: ..., block: ...}}`.
+  """
+  def bench(%{stage: :native_plan} = plan, args, opts \\ []) do
+    ensure_void_result!(plan)
+
+    {:ok, %{executable: executable}} =
+      case load(plan, Keyword.take(opts, [:device])) do
+        {:ok, loaded} -> {:ok, loaded}
+        {:error, blocked} -> raise_blocked!(blocked)
+      end
+
+    device = executable.device
+    grid = launch_grid!(plan, opts)
+    metadata = executable.launch_metadata
+
+    warmup = Keyword.get(opts, :warmup, 25)
+    reps = Keyword.get(opts, :reps, 100)
+    rounds = Keyword.get(opts, :rounds, 5)
+
+    expected_args = get_in(plan, [:runtime, :arguments]) || []
+
+    bindings =
+      expected_args
+      |> Enum.zip(args)
+      |> Enum.map(fn {expected, value} -> upload_arg(expected, value, device) end)
+
+    scratch = allocate_scratch(metadata, grid, device)
+
+    kernel_args =
+      Enum.map(bindings, & &1.kernel_arg) ++
+        [{:ptr, scratch.global_scratch}, {:ptr, scratch.profile_scratch}]
+
+    block = launch_block(plan, metadata)
+    shared = metadata.shared || 0
+
+    flush_l2? = Keyword.get(opts, :flush_l2, true)
+
+    flush_bytes = 128 * 1024 * 1024
+
+    flush_pointer =
+      if flush_l2? do
+        {:ok, pointer} = Triton.NIF.cuda_mem_alloc(flush_bytes, device)
+        pointer
+      end
+
+    flush = fn ->
+      if flush_pointer do
+        :ok = unwrap_nif!(Triton.NIF.cuda_memset_d8(flush_pointer, 0, flush_bytes, device))
+      end
+    end
+
+    fire = fn ->
+      :ok =
+        Triton.NIF.cuda_launch(executable.ref, grid, block, shared, kernel_args, synchronize: 0)
+    end
+
+    time_batch = fn body ->
+      t0 = System.monotonic_time(:microsecond)
+      for _ <- 1..reps, do: body.()
+      :ok = unwrap_nif!(Triton.NIF.cuda_synchronize(device))
+      t1 = System.monotonic_time(:microsecond)
+      (t1 - t0) / reps / 1000.0
+    end
+
+    try do
+      for _ <- 1..warmup do
+        flush.()
+        fire.()
+      end
+
+      :ok = unwrap_nif!(Triton.NIF.cuda_synchronize(device))
+
+      rounds_ms =
+        for _ <- 1..rounds do
+          kernel_ms =
+            time_batch.(fn ->
+              flush.()
+              fire.()
+            end)
+
+          if flush_pointer do
+            # The flush cost is measured separately and subtracted; under
+            # concurrent GPU load the subtraction can go slightly negative,
+            # so clamp to a small positive floor.
+            max(kernel_ms - time_batch.(flush), 1.0e-4)
+          else
+            kernel_ms
+          end
+        end
+
+      {:ok,
+       %{
+         avg_ms: Enum.min(rounds_ms),
+         rounds_ms: rounds_ms,
+         reps: reps,
+         grid: grid,
+         block: block
+       }}
+    after
+      if flush_pointer, do: Triton.NIF.cuda_mem_free(flush_pointer, device)
+      free_bindings(bindings, device)
+      free_scratch(scratch, device)
+    end
+  end
+
   ## Compilation / caching
 
   # Produces the CUBIN and launch metadata for a plan, reusing cache artifacts
