@@ -166,14 +166,36 @@ defmodule Triton.Compiler.NVidia do
     ]
 
     nif_opts =
-      case Keyword.get(opts, :link_bitcode, []) do
+      case Keyword.get(opts, :link_bitcode, []) ++ libdevice_bitcode() do
         [] -> nif_opts
-        paths -> [{:link_bitcode, paths} | nif_opts]
+        paths -> [{:link_bitcode, Enum.uniq(paths)} | nif_opts]
       end
 
     case Triton.NIF.emit_ptx(module_ref, nif_opts) do
       {:ok, ptx} -> {:ok, postprocess_ptx(IO.iodata_to_binary(ptx), capability, ptx_version)}
       {:error, reason} -> {:error, to_string(reason)}
+    end
+  end
+
+  # Transcendental math ops (sqrt, log, sin, ...) lower to `__nv_*` calls
+  # that live in NVIDIA's libdevice bitcode; without linking it, ptxas fails
+  # with unresolved externs. Upstream Triton always links libdevice.
+  @doc false
+  def libdevice_bitcode do
+    candidates =
+      [System.get_env("TRITON_LIBDEVICE_PATH")] ++
+        ["/usr/local/cuda/nvvm/libdevice/libdevice.10.bc"] ++
+        Path.wildcard("/usr/local/cuda-*/nvvm/libdevice/libdevice.10.bc") ++
+        Path.wildcard(
+          Path.join(
+            System.user_home() || "/",
+            ".local/lib/python3*/site-packages/triton/backends/nvidia/lib/libdevice.10.bc"
+          )
+        )
+
+    case Enum.find(candidates, &(is_binary(&1) and File.exists?(&1))) do
+      nil -> []
+      path -> [path]
     end
   end
 
