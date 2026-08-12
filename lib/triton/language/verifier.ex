@@ -148,6 +148,8 @@ defmodule Triton.Language.Verifier do
                :floor,
                :fma,
                :fmod,
+               :for_loop,
+               :tuple_element,
                :full,
                :full_like,
                :ge,
@@ -691,7 +693,7 @@ defmodule Triton.Language.Verifier do
       |> verify_numeric_operand_type(left.type, path, op, :left)
       |> verify_numeric_operand_type(right.type, path, op, :right)
 
-    verify_expected_type(errors, type, promote_type(left.type, right.type), path, op)
+    verify_expected_type(errors, type, weak_promote(left, right, promote_type(left.type, right.type)), path, op)
   end
 
   defp verify_op_contract(
@@ -726,7 +728,12 @@ defmodule Triton.Language.Verifier do
     else
       errors
       |> verify_binary_numeric_operand_types(op, left.type, right.type, path)
-      |> verify_expected_type(type, binary_numeric_type(op, left.type, right.type), path, op)
+      |> verify_expected_type(
+        type,
+        weak_promote(left, right, binary_numeric_type(op, left.type, right.type)),
+        path,
+        op
+      )
     end
   end
 
@@ -740,7 +747,7 @@ defmodule Triton.Language.Verifier do
     |> verify_expected_shape(shape, broadcast_result_shape(left.shape, right.shape), path, op)
     |> verify_integer_operand_type(left.type, path, op, :left)
     |> verify_integer_operand_type(right.type, path, op, :right)
-    |> verify_expected_type(type, promote_type(left.type, right.type), path, op)
+    |> verify_expected_type(type, weak_promote(left, right, promote_type(left.type, right.type)), path, op)
   end
 
   defp verify_op_contract(
@@ -767,7 +774,12 @@ defmodule Triton.Language.Verifier do
     |> maybe_verify_boolean_option(op == :fdiv, opts[:ieee_rounding], path, op, :ieee_rounding)
     |> verify_numeric_operand_type(left.type, path, op, :left)
     |> verify_numeric_operand_type(right.type, path, op, :right)
-    |> verify_expected_type(type, binary_float_type(left.type, right.type), path, op)
+    |> verify_expected_type(
+      type,
+      float_result_type(weak_promote(left, right, binary_float_type(left.type, right.type))),
+      path,
+      op
+    )
   end
 
   defp verify_op_contract(
@@ -807,7 +819,7 @@ defmodule Triton.Language.Verifier do
     |> verify_expected_shape(shape, expected, path, :where)
     |> verify_expected_type(condition.type, {:pred, 8}, path, :"where condition")
     |> verify_where_branch_types(x.type, y.type, path)
-    |> verify_expected_type(type, promote_type(x.type, y.type), path, :where)
+    |> verify_expected_type(type, weak_promote(x, y, promote_type(x.type, y.type)), path, :where)
   end
 
   defp verify_op_contract(
@@ -988,6 +1000,55 @@ defmodule Triton.Language.Verifier do
     errors
     |> verify_expected_shape(shape, value.shape, path, :sequence)
     |> verify_expected_type(type, value.type, path, :sequence)
+  end
+
+  defp verify_op_contract(
+         errors,
+         %Expr{op: :for_loop, args: [_start, _stop, _step | inits], opts: opts, shape: shape, type: type},
+         path
+       ) do
+    errors =
+      case inits do
+        [init] ->
+          errors
+          |> verify_expected_shape(shape, init.shape, path, :for_loop)
+          |> verify_expected_type(type, init.type, path, :for_loop)
+
+        _multi ->
+          maybe_error(
+            errors,
+            type != :tuple or not is_list(shape),
+            "#{path}: multi-carry loop must have tuple type"
+          )
+      end
+
+    errors = verify_expr(errors, opts[:index], "#{path}.index")
+
+    errors =
+      opts[:carries]
+      |> List.wrap()
+      |> Enum.with_index()
+      |> Enum.reduce(errors, fn {carry, position}, errors ->
+        verify_expr(errors, carry, "#{path}.carries[#{position}]")
+      end)
+
+    verify_expr(errors, opts[:body], "#{path}.body")
+  end
+
+  defp verify_op_contract(
+         errors,
+         %Expr{op: :tuple_element, args: [tuple], opts: opts},
+         path
+       ) do
+    errors
+    |> maybe_error(
+      not (is_integer(opts[:index]) and opts[:index] >= 0),
+      "#{path}: tuple_element index must be a non-negative integer"
+    )
+    |> maybe_error(
+      tuple.type != :tuple,
+      "#{path}: tuple_element input must be tuple-typed"
+    )
   end
 
   defp verify_op_contract(
@@ -1442,6 +1503,35 @@ defmodule Triton.Language.Verifier do
 
   defp scan_type(:cumsum, input_type, opts), do: opts[:dtype] || input_type
   defp scan_type(_op, input_type, _opts), do: input_type
+
+  # Mirrors the analyzer's weak scalar promotion: numeric literals adopt the
+  # other operand's type.
+  defp weak_promote(%Expr{op: :literal}, %Expr{op: :literal}, fallback), do: fallback
+
+  defp weak_promote(%Expr{op: :literal} = weak, %Expr{} = strong, fallback),
+    do: weak_literal_type(strong.type, weak.type) || fallback
+
+  defp weak_promote(%Expr{} = strong, %Expr{op: :literal} = weak, fallback),
+    do: weak_literal_type(strong.type, weak.type) || fallback
+
+  defp weak_promote(_left, _right, fallback), do: fallback
+
+  defp weak_literal_type({:ptr, _}, _weak), do: nil
+  defp weak_literal_type(strong, _weak) when strong in [nil, :unknown], do: nil
+
+  defp weak_literal_type(strong, weak) do
+    weak_float? = match?({kind, _} when kind in [:f, :bf], weak)
+    strong_float? = match?({kind, _} when kind in [:f, :bf], strong)
+
+    cond do
+      weak_float? and strong_float? -> strong
+      weak_float? -> {:f, 32}
+      true -> strong
+    end
+  end
+
+  defp float_result_type({kind, _} = type) when kind in [:f, :bf], do: type
+  defp float_result_type(_type), do: {:f, 32}
 
   defp binary_float_type(left, right) do
     [left, right]

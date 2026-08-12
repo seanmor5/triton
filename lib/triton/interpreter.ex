@@ -132,6 +132,8 @@ defmodule Triton.Interpreter do
                 :expand_dims,
                 :flip,
                 :fma,
+                :for_loop,
+                :tuple_element,
                 :full,
                 :full_like,
                 :gather,
@@ -518,6 +520,51 @@ defmodule Triton.Interpreter do
     eval(value_expr, env)
   end
 
+  def eval(%Expr{op: :for_loop, args: [start, stop, step | inits], opts: opts}, env) do
+    start_value = scalar_int!(eval(start, env), :start)
+    stop_value = scalar_int!(eval(stop, env), :stop)
+    step_value = scalar_int!(eval(step, env), :step)
+
+    if step_value == 0 do
+      raise ArgumentError, "loop step must be non-zero"
+    end
+
+    index_name = opts[:index].opts[:name]
+    carry_names = Enum.map(opts[:carries], & &1.opts[:name])
+    body = opts[:body]
+
+    init_values = Enum.map(inits, &eval(&1, env))
+
+    final =
+      start_value..(stop_value - sign(step_value))//step_value
+      |> Enum.reduce(init_values, fn index, carry_values ->
+        env =
+          carry_names
+          |> Enum.zip(carry_values)
+          |> Enum.reduce(Map.put(env, index_name, index), fn {name, value}, env ->
+            Map.put(env, name, value)
+          end)
+
+        case {carry_names, eval(body, env)} do
+          {[_single], result} -> [result]
+          {_multi, result} when is_tuple(result) -> Tuple.to_list(result)
+          {_multi, result} when is_list(result) -> result
+        end
+      end)
+
+    case final do
+      [single] -> single
+      multi -> List.to_tuple(multi)
+    end
+  end
+
+  def eval(%Expr{op: :tuple_element, args: [tuple_expr], opts: opts}, env) do
+    case eval(tuple_expr, env) do
+      value when is_tuple(value) -> elem(value, opts[:index])
+      value when is_list(value) -> Enum.at(value, opts[:index])
+    end
+  end
+
   def eval(%Expr{op: :device_print, args: args, opts: opts}, env) do
     values = Enum.map(args, &eval(&1, env))
     rendered = if opts[:hex], do: inspect(values, base: :hex), else: inspect(values)
@@ -577,24 +624,48 @@ defmodule Triton.Interpreter do
     |> map_value(&cast_value(&1, opts[:dtype]), expr.shape)
   end
 
-  def eval(%Expr{op: :add, args: [left, right]}, env) do
-    left = eval(left, env)
-    right = eval(right, env)
+  def eval(%Expr{op: :add, args: [left, right]} = expr, env) do
+    left_value = eval(left, env)
+    right_value = eval(right, env)
 
-    case {left, right} do
-      {%Pointer{} = pointer, offset} -> offset_pointer(pointer, offset)
-      {offset, %Pointer{} = pointer} -> offset_pointer(pointer, offset)
-      _ -> map2(left, right, binary_fun(:add), nil)
+    case {left_value, right_value} do
+      {%Pointer{} = pointer, offset} ->
+        pointer
+        |> broadcast_pointer(left.shape, expr.shape)
+        |> offset_pointer(broadcast_value(offset, right.shape, expr.shape))
+
+      {offset, %Pointer{} = pointer} ->
+        pointer
+        |> broadcast_pointer(right.shape, expr.shape)
+        |> offset_pointer(broadcast_value(offset, left.shape, expr.shape))
+
+      _ ->
+        map2(
+          broadcast_value(left_value, left.shape, expr.shape),
+          broadcast_value(right_value, right.shape, expr.shape),
+          binary_fun(:add),
+          expr.shape
+        )
     end
   end
 
-  def eval(%Expr{op: :sub, args: [left, right]}, env) do
-    left = eval(left, env)
-    right = eval(right, env)
+  def eval(%Expr{op: :sub, args: [left, right]} = expr, env) do
+    left_value = eval(left, env)
+    right_value = eval(right, env)
 
-    case {left, right} do
-      {%Pointer{} = pointer, offset} -> offset_pointer(pointer, negate_offset(offset))
-      _ -> map2(left, right, binary_fun(:sub), nil)
+    case {left_value, right_value} do
+      {%Pointer{} = pointer, offset} ->
+        pointer
+        |> broadcast_pointer(left.shape, expr.shape)
+        |> offset_pointer(negate_offset(broadcast_value(offset, right.shape, expr.shape)))
+
+      _ ->
+        map2(
+          broadcast_value(left_value, left.shape, expr.shape),
+          broadcast_value(right_value, right.shape, expr.shape),
+          binary_fun(:sub),
+          expr.shape
+        )
     end
   end
 
@@ -940,8 +1011,8 @@ defmodule Triton.Interpreter do
       raise ArgumentError, "load expects a pointer argument, got #{inspect(pointer)}"
     end
 
-    mask = eval_optional_expr(opts[:mask], env, true)
-    other = eval_optional_expr(opts[:other], env, nil)
+    mask = eval_optional_broadcast(opts[:mask], env, true, pointer_expr.shape)
+    other = eval_optional_broadcast(opts[:other], env, nil, pointer_expr.shape)
     load_pointer(pointer, mask, other, opts)
   end
 
@@ -952,8 +1023,8 @@ defmodule Triton.Interpreter do
       raise ArgumentError, "store expects a pointer argument, got #{inspect(pointer)}"
     end
 
-    value = eval(value_expr, env)
-    mask = eval_optional_expr(opts[:mask], env, true)
+    value = value_expr |> eval(env) |> broadcast_value(value_expr.shape, pointer_expr.shape)
+    mask = eval_optional_broadcast(opts[:mask], env, true, pointer_expr.shape)
     store_pointer(pointer, value, mask, opts)
   end
 
@@ -965,8 +1036,8 @@ defmodule Triton.Interpreter do
       raise ArgumentError, "#{op} expects a pointer argument, got #{inspect(pointer)}"
     end
 
-    value = eval(value_expr, env)
-    mask = eval_optional_expr(opts[:mask], env, true)
+    value = value_expr |> eval(env) |> broadcast_value(value_expr.shape, pointer_expr.shape)
+    mask = eval_optional_broadcast(opts[:mask], env, true, pointer_expr.shape)
     atomic_old_values(pointer, value, nil, mask, op)
   end
 
@@ -977,9 +1048,9 @@ defmodule Triton.Interpreter do
       raise ArgumentError, "atomic_cas expects a pointer argument, got #{inspect(pointer)}"
     end
 
-    cmp = eval(cmp_expr, env)
-    value = eval(value_expr, env)
-    mask = eval_optional_expr(opts[:mask], env, true)
+    cmp = cmp_expr |> eval(env) |> broadcast_value(cmp_expr.shape, pointer_expr.shape)
+    value = value_expr |> eval(env) |> broadcast_value(value_expr.shape, pointer_expr.shape)
+    mask = eval_optional_broadcast(opts[:mask], env, true, pointer_expr.shape)
     atomic_old_values(pointer, value, cmp, mask, :atomic_cas)
   end
 
@@ -1634,8 +1705,25 @@ defmodule Triton.Interpreter do
     end
   end
 
+  defp scalar_int!(value, _label) when is_integer(value), do: value
+  defp scalar_int!([value], _label) when is_integer(value), do: value
+
+  defp scalar_int!(value, label) do
+    raise ArgumentError, "loop #{label} must evaluate to a scalar integer, got #{inspect(value)}"
+  end
+
+  defp sign(value) when value > 0, do: 1
+  defp sign(_value), do: -1
+
   defp offset_pointer(%Pointer{offset: base} = pointer, offset) do
     %{pointer | offset: map2(base, offset, &Kernel.+/2, nil)}
+  end
+
+  # Rebroadcasts a pointer's accumulated element offsets when pointer
+  # arithmetic broadcasts the pointer tensor itself (e.g. a `{4, 1}` pointer
+  # block plus a `{1, 4}` offset tensor).
+  defp broadcast_pointer(%Pointer{offset: base} = pointer, shape, out_shape) do
+    %{pointer | offset: broadcast_value(base, shape, out_shape)}
   end
 
   defp block_pointer(%Pointer{} = base, opts) do
@@ -2387,6 +2475,16 @@ defmodule Triton.Interpreter do
   defp eval_optional_expr(%Expr{} = expr, env, _default), do: eval(expr, env)
   defp eval_optional_expr(nil, _env, default), do: default
   defp eval_optional_expr(value, _env, _default), do: value
+
+  # Evaluates an optional load/store operand (mask, other) and broadcasts it
+  # to the pointer's shape, so e.g. a `{bm, 1}` row mask applies to a
+  # `{bm, bn}` block of pointers.
+  defp eval_optional_broadcast(%Expr{} = expr, env, _default, target_shape) do
+    expr |> eval(env) |> broadcast_value(expr.shape, target_shape)
+  end
+
+  defp eval_optional_broadcast(nil, _env, default, _target_shape), do: default
+  defp eval_optional_broadcast(value, _env, _default, _target_shape), do: value
 
   defp device_assert_enabled? do
     System.get_env("TRITON_DEBUG") not in [nil, "", "0", "false", "FALSE"]

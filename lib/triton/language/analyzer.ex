@@ -306,6 +306,85 @@ defmodule Triton.Language.Analyzer do
     {%{expr | args: [effect, value], shape: value.shape, type: value.type}, context}
   end
 
+  defp annotate(
+         %Expr{op: :for_loop, args: [start, stop, step | inits], opts: opts} = expr,
+         context
+       ) do
+    {start, context} = annotate(start, context)
+    {stop, context} = annotate(stop, context)
+    {step, context} = annotate(step, context)
+    {inits, context} = annotate_args(inits, context)
+
+    for {bound, label} <- [{start, :start}, {stop, :stop}, {step, :step}] do
+      unless bound.shape in [nil, {}] and integer_type?(bound.type) do
+        raise ArgumentError,
+              "loop #{label} must be a scalar integer, got shape #{inspect(bound.shape)} " <>
+                "and type #{inspect(bound.type)}"
+      end
+    end
+
+    index = %{opts[:index] | shape: {}, type: {:s, 32}}
+
+    carries =
+      opts[:carries]
+      |> Enum.zip(inits)
+      |> Enum.map(fn {carry, init} -> %{carry | shape: init.shape, type: init.type} end)
+
+    substitutions =
+      [index | carries]
+      |> Map.new(fn param -> {param_name(param), param} end)
+
+    body = substitute_loop_params(opts[:body], substitutions)
+    {body, context} = annotate(body, context)
+
+    body_results =
+      case {carries, body} do
+        {[_single], %Expr{op: :tuple}} -> body.args
+        {[_single], _} -> [body]
+        {_multi, %Expr{op: :tuple, args: args}} -> args
+        {_multi, _} -> raise ArgumentError, "loop body must return a tuple of carried values"
+      end
+
+    unless length(body_results) == length(inits) do
+      raise ArgumentError,
+            "loop body must return #{length(inits)} carried value(s), got #{length(body_results)}"
+    end
+
+    for {result, init} <- Enum.zip(body_results, inits) do
+      unless result.shape == init.shape and result.type == init.type do
+        raise ArgumentError,
+              "loop body must return the carried value's shape and type " <>
+                "(#{inspect(init.shape)} #{inspect(init.type)}), got " <>
+                "#{inspect(result.shape)} #{inspect(result.type)}"
+      end
+    end
+
+    opts =
+      opts
+      |> Keyword.put(:index, index)
+      |> Keyword.put(:carries, carries)
+      |> Keyword.put(:body, body)
+
+    {shape, type} =
+      case inits do
+        [single] -> {single.shape, single.type}
+        multi -> {Enum.map(multi, &expr_typespec/1), :tuple}
+      end
+
+    {%{expr | args: [start, stop, step | inits], opts: opts, shape: shape, type: type}, context}
+  end
+
+  defp annotate(%Expr{op: :tuple_element, args: [tuple], opts: opts} = expr, context) do
+    {tuple, context} = annotate(tuple, context)
+
+    unless tuple.type == :tuple and is_list(tuple.shape) do
+      raise ArgumentError, "tuple_element expects a tuple-valued expression"
+    end
+
+    spec = Enum.at(tuple.shape, opts[:index])
+    {%{expr | args: [tuple], shape: spec.shape, type: spec.type}, context}
+  end
+
   defp annotate(%Expr{op: :device_print, args: args, opts: opts} = expr, context) do
     {args, context} = annotate_args(args, context)
     validate_boolean_opts!(opts, [:hex], :device_print)
@@ -399,7 +478,7 @@ defmodule Triton.Language.Analyzer do
     validate_nullable_boolean_opts!(expr.opts, [:propagate_nan], op)
     validate_binary_numeric_operands!(op, left.type, right.type)
     shape = broadcast_shape!(left.shape, right.shape, op)
-    type = binary_numeric_type(op, left.type, right.type)
+    type = weak_promote(left, right, binary_numeric_type(op, left.type, right.type))
     {%{expr | args: [left, right], shape: shape, type: type}, context}
   end
 
@@ -410,7 +489,7 @@ defmodule Triton.Language.Analyzer do
     validate_integer_operand!(left.type, op, :left)
     validate_integer_operand!(right.type, op, :right)
     shape = broadcast_shape!(left.shape, right.shape, op)
-    type = promote_type(left.type, right.type)
+    type = weak_promote(left, right, promote_type(left.type, right.type))
     {%{expr | args: [left, right], shape: shape, type: type}, context}
   end
 
@@ -432,7 +511,7 @@ defmodule Triton.Language.Analyzer do
     validate_numeric_operand!(left.type, op, :left)
     validate_numeric_operand!(right.type, op, :right)
     shape = broadcast_shape!(left.shape, right.shape, op)
-    type = binary_float_type(left.type, right.type)
+    type = float_type(weak_promote(left, right, binary_float_type(left.type, right.type)))
     {%{expr | args: [left, right], shape: shape, type: type}, context}
   end
 
@@ -466,7 +545,7 @@ defmodule Triton.Language.Analyzer do
     shape =
       condition.shape |> broadcast_shape!(x.shape, :where) |> broadcast_shape!(y.shape, :where)
 
-    type = promote_type(x.type, y.type)
+    type = weak_promote(x, y, promote_type(x.type, y.type))
     {%{expr | args: [condition, x, y], shape: shape, type: type}, context}
   end
 
@@ -1642,6 +1721,55 @@ defmodule Triton.Language.Analyzer do
 
   defp binary_numeric_type(op, left_type, right_type) when op in @binary_numeric_ops,
     do: promote_type(left_type, right_type)
+
+  defp param_name(%Expr{opts: opts}), do: opts[:name]
+
+  # Replaces unannotated loop parameters (matched by name) with their
+  # annotated versions throughout a loop body.
+  defp substitute_loop_params(%Expr{op: :parameter} = expr, substitutions) do
+    Map.get(substitutions, param_name(expr), expr)
+  end
+
+  defp substitute_loop_params(%Expr{args: args, opts: opts} = expr, substitutions) do
+    args = Enum.map(args || [], &substitute_loop_params(&1, substitutions))
+
+    opts =
+      Enum.map(opts || [], fn
+        {key, %Expr{} = value} -> {key, substitute_loop_params(value, substitutions)}
+        other -> other
+      end)
+
+    %{expr | args: args, opts: opts}
+  end
+
+  defp substitute_loop_params(other, _substitutions), do: other
+
+  # Weak scalar promotion, as in Nx/NumPy: a bare numeric literal adopts the
+  # other operand's type instead of widening the whole expression (so
+  # `x + 1.0` on an f32 tensor stays f32 rather than becoming f64).
+  defp weak_promote(%Expr{op: :literal}, %Expr{op: :literal}, fallback), do: fallback
+
+  defp weak_promote(%Expr{op: :literal} = weak, %Expr{} = strong, fallback),
+    do: weak_literal_type(strong.type, weak.type) || fallback
+
+  defp weak_promote(%Expr{} = strong, %Expr{op: :literal} = weak, fallback),
+    do: weak_literal_type(strong.type, weak.type) || fallback
+
+  defp weak_promote(_left, _right, fallback), do: fallback
+
+  defp weak_literal_type({:ptr, _} = _strong, _weak), do: nil
+  defp weak_literal_type(strong, _weak) when strong in [nil, :unknown], do: nil
+
+  defp weak_literal_type(strong, weak) do
+    weak_float? = match?({kind, _} when kind in [:f, :bf], weak)
+    strong_float? = match?({kind, _} when kind in [:f, :bf], strong)
+
+    cond do
+      weak_float? and strong_float? -> strong
+      weak_float? -> {:f, 32}
+      true -> strong
+    end
+  end
 
   defp promote_type(nil, type), do: type
   defp promote_type(type, nil), do: type
