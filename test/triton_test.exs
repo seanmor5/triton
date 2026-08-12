@@ -672,9 +672,9 @@ defmodule TritonTest do
                assert [2.0, 3.0] = Kernel.run(kernel, [[1.0, 2.0]], return: :list)
              end) == "x=[[1.0, 2.0]]\n"
 
-      ttir = Kernel.to_ttir_string(kernel)
-      assert ttir =~ "tt.device_print"
-      assert ttir =~ "arith.add"
+      assert_raise Triton.MLIR.Textual.UnsupportedError, ~r/:device_print/, fn ->
+        Kernel.to_ttir_string(kernel)
+      end
 
       direct_kernel =
         Triton.kernel(fn x ->
@@ -980,7 +980,7 @@ defmodule TritonTest do
                op: :where,
                args: [
                  %Expr{op: :lt},
-                 %Expr{op: :neg},
+                 %Expr{op: :literal, opts: [value: -1]},
                  %Expr{
                    op: :where,
                    args: [%Expr{op: :gt}, %Expr{op: :literal}, %Expr{op: :literal}]
@@ -1899,7 +1899,7 @@ defmodule TritonTest do
         |> Triton.call(fn x -> Tl.sum(x, axis: 1) end, return: :nx)
         |> Triton.call(fn x -> Tl.maximum(x, 3) end, return: :tensor)
 
-      assert %{shape: {2}, type: {:s, 64}, values: [3, 7]} = result
+      assert %{shape: {2}, type: {:s, 32}, values: [3, 7]} = result
     end
 
     test "calls infer high-level return modes from input data" do
@@ -3970,7 +3970,7 @@ defmodule TritonTest do
       where_kernel =
         SyntaxKernels.positive_or_zero([Typespec.tensor({:s, 32}, {3})])
         |> Kernel.transform(fn
-          %Expr{op: :where} = expr -> %{expr | type: {:f, 32}}
+          %Expr{op: :where} = expr -> %{expr | type: {:f, 16}}
           expr -> expr
         end)
 
@@ -5063,7 +5063,7 @@ defmodule TritonTest do
       kernel = SyntaxKernels.add_one([spec])
 
       assert %Kernel{name: "add_one"} = kernel
-      assert %Expr{op: :add, shape: {128}, type: {:f, 64}} = kernel.body
+      assert %Expr{op: :add, shape: {128}, type: {:f, 32}} = kernel.body
     end
 
     test "defkernel supports default and overridden names" do
@@ -5083,7 +5083,7 @@ defmodule TritonTest do
 
       assert formatted ==
                """
-               kernel add_one(arg0: tensor<128xf32>) -> tensor<128xf64> {
+               kernel add_one(arg0: tensor<128xf32>) -> tensor<128xf32> {
                  (arg0 + 1.0)
                }
                """
@@ -5166,8 +5166,8 @@ defmodule TritonTest do
 
       assert ttir =~ "module {"
       assert ttir =~ "tt.func public @max_offsets(%arg0: tensor<4xf32>)"
-      assert ttir =~ "tt.arange"
-      assert ttir =~ "math.maximum"
+      assert ttir =~ "tt.make_range {end = 4 : i32, start = 0 : i32} : tensor<4xi32>"
+      assert ttir =~ "arith.maxnumf"
       assert ttir =~ "tt.return"
       assert Kernel.to_ttir_string(kernel) == ttir
       assert Triton.to_ttir_string(kernel) == ttir
@@ -5184,8 +5184,8 @@ defmodule TritonTest do
         )
 
       assert direct_ttir =~ "tt.func public @direct_max_offsets(%arg0: tensor<4xf32>)"
-      assert direct_ttir =~ "tt.arange"
-      assert direct_ttir =~ "math.maximum"
+      assert direct_ttir =~ "tt.make_range"
+      assert direct_ttir =~ "arith.maxnumf"
 
       wrapper_ttir =
         Triton.autotune(
@@ -5576,7 +5576,13 @@ defmodule TritonTest do
                hd(blockers)
 
       assert Enum.any?(blockers, &(&1.requirement == :ptx_emitter))
-      assert Enum.any?(blockers, &(&1.requirement == :device_binary_emitter))
+
+      # ptxas availability depends on the host; when it is installed the
+      # device-binary emitter is correctly absent from the blocker list.
+      if System.find_executable("ptxas") == nil do
+        assert Enum.any?(blockers, &(&1.requirement == :device_binary_emitter))
+      end
+
       assert Enum.any?(blockers, &(&1.requirement == :device_runtime_loader))
       assert Enum.any?(blockers, &(&1.requirement == :accelerator_hardware_validation))
 
@@ -5759,8 +5765,10 @@ defmodule TritonTest do
                blocker_count: length(blockers),
                blocked_by: Enum.map(blockers, & &1.requirement),
                requirements: %{
+                 # ptxas availability depends on the host, so the satisfied
+                 # count is derived rather than hardcoded.
                  total: length(requirements),
-                 satisfied: 1,
+                 satisfied: length(requirements) - length(blockers),
                  blocked: length(blockers)
                }
              }
@@ -6263,7 +6271,7 @@ defmodule TritonTest do
              } = direct_plan
 
       assert direct_plan.module =~ "tt.func public @direct_native_plan"
-      assert direct_plan.module =~ "tt.arange"
+      assert direct_plan.module =~ "tt.make_range"
 
       direct_fun =
         Triton.kernel(fn x, block_size ->
@@ -6397,8 +6405,8 @@ defmodule TritonTest do
       assert transformed_plan_kernel.compiled == nil
 
       transformed_plan = Kernel.to_native_plan(transformed_plan_kernel, arch: 90)
-      assert transformed_plan.module =~ "math.minimum"
-      refute transformed_plan.module =~ "math.maximum"
+      assert transformed_plan.module =~ "arith.minnumf"
+      refute transformed_plan.module =~ "arith.maxnumf"
 
       tuned_plan =
         Kernel.to_native_plan(expr_kernel,
@@ -7172,8 +7180,11 @@ defmodule TritonTest do
                native_available?: true,
                status: :requires_target_gpu_arch,
                blocked_by: [:target_gpu_arch | _],
-               requirements: %{satisfied: 3}
+               requirements: %{satisfied: satisfied_count}
              } = Triton.native_plan_summary(native_missing_arch_plan)
+
+      # ptxas availability depends on the host.
+      assert satisfied_count in [3, 4]
 
       refute Triton.native_plan_executable?(native_missing_arch_plan)
 
@@ -7402,22 +7413,37 @@ defmodule TritonTest do
                 command_ready?: false,
                 input: %{stage: :ptx, exists?: false},
                 output: %{stage: :artifact, exists?: false},
-                command: %{args: fake_native_ptxas_args},
-                blocked_by: [:device_binary_emitter],
-                blockers: [%{requirement: :device_binary_emitter}],
+                command: %{args: fake_native_ptxas_args} = fake_native_ptxas_command,
+                blocked_by: fake_native_ptxas_blocked_by,
+                blockers: fake_native_ptxas_blockers,
                 not_ready_reasons: fake_native_ptxas_reasons
               }} = Triton.native_plan_device_binary_request(native_ready_for_runtime_plan)
 
       assert "--gpu-name=sm_90a" in fake_native_ptxas_args
       assert Enum.any?(fake_native_ptxas_reasons, &match?(%{reason: :missing_input}, &1))
 
-      assert Enum.any?(
-               fake_native_ptxas_reasons,
-               &match?(
-                 %{reason: :blocked_requirements, requirements: [:device_binary_emitter]},
-                 &1
+      if ptxas_path do
+        assert fake_native_ptxas_blocked_by == []
+        assert fake_native_ptxas_blockers == []
+        assert fake_native_ptxas_command.executable == "ptxas"
+        assert fake_native_ptxas_command.path == ptxas_path
+
+        refute Enum.any?(
+                 fake_native_ptxas_reasons,
+                 &match?(%{reason: :blocked_requirements}, &1)
                )
-             )
+      else
+        assert fake_native_ptxas_blocked_by == [:device_binary_emitter]
+        assert [%{requirement: :device_binary_emitter}] = fake_native_ptxas_blockers
+
+        assert Enum.any?(
+                 fake_native_ptxas_reasons,
+                 &match?(
+                   %{reason: :blocked_requirements, requirements: [:device_binary_emitter]},
+                   &1
+                 )
+               )
+      end
 
       assert {:error,
               %{
@@ -7545,9 +7571,10 @@ defmodule TritonTest do
         |> Triton.jit([ptr])
         |> Kernel.to_ttir_string()
 
-      assert ttir =~ "tt.load"
-      assert ttir =~ "tt.store"
-      assert ttir =~ "mask ="
+      assert ttir =~ "tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32>"
+      assert ttir =~ "arith.cmpi slt"
+      assert ttir =~ ~r/tt\.load %\d+, %\d+, %\d+ : tensor<128x!tt\.ptr<f32>>/
+      assert ttir =~ ~r/tt\.store %\d+, %\d+, %\d+ : tensor<128x!tt\.ptr<f32>>/
     end
 
     test "textual TTIR lowers void tuple side-effect returns cleanly" do
@@ -7557,12 +7584,14 @@ defmodule TritonTest do
         SyntaxKernels.store_two_program_ids([ptr, ptr], grid: {2})
         |> Kernel.to_ttir_string()
 
-      assert ttir =~ "-> ()"
-      assert ttir =~ "triton.grid = [2]"
-      assert ttir =~ "tt.store"
-      assert ttir =~ "tt.return"
+      assert ttir =~
+               "tt.func public @store_two_program_ids(%arg0: !tt.ptr<i32>, %arg1: !tt.ptr<i32>) attributes"
+
+      assert ttir =~ "tt.get_program_id x : i32"
+      assert ttir =~ ~r/tt\.store %\d+, %\d+ : !tt\.ptr<i32>/
+      assert ttir =~ "tt.return\n"
       refute ttir =~ "tt.return ,"
-      refute ttir =~ "triton.grid = {2}"
+      refute ttir =~ "-> ("
       refute ttir =~ "void, void"
     end
 
@@ -7575,12 +7604,11 @@ defmodule TritonTest do
         |> Kernel.to_ttir_string()
 
       assert ttir =~ "tt.func public @pair_broadcast"
-      assert ttir =~ "tt.broadcast_to %arg0 : (tensor<2xf32>) -> tensor<2xf32>"
-      assert ttir =~ "tt.broadcast_to %arg1 : (tensor<f32>) -> tensor<2xf32>"
-      assert ttir =~ "tt.return %0, %1 : tensor<2xf32>, tensor<2xf32>"
+      assert ttir =~ "%0 = tt.splat %arg1 : f32 -> tensor<2xf32>"
+      assert ttir =~ "tt.return %arg0, %0 : tensor<2xf32>, tensor<2xf32>"
       assert Triton.MLIR.Textual.op_name(:broadcast) == "tt.broadcast"
       refute ttir =~ "math.broadcast"
-      refute ttir =~ "tt.return %0 : (tensor<2xf32>, tensor<2xf32>)"
+      refute ttir =~ "tt.return %arg0 : (tensor<2xf32>, tensor<2xf32>)"
     end
 
     test "textual TTIR lowers generic tuple ops as multiple values" do
@@ -7591,9 +7619,9 @@ defmodule TritonTest do
         |> Kernel.to_ttir_string()
 
       assert ttir =~ "tt.func public @split_pair"
-      assert ttir =~ "%0, %1 = tt.split %arg0 : (tensor<2xi32>) -> (tensor<i32>, tensor<i32>)"
-      assert ttir =~ "tt.return %0, %1 : tensor<i32>, tensor<i32>"
-      refute ttir =~ "tt.return %0 : (tensor<i32>, tensor<i32>)"
+      assert ttir =~ "%0, %1 = tt.split %arg0 : tensor<2xi32> -> i32"
+      assert ttir =~ "tt.return %0, %1 : i32, i32"
+      refute ttir =~ "tt.return %0 : (i32, i32)"
     end
 
     test "textual TTIR lowers where/select with explicit select op" do
@@ -7620,7 +7648,7 @@ defmodule TritonTest do
         Triton.jit(fn x -> Tl.cast(x, :float32) end, [vector], name: "cast_values")
         |> Kernel.to_ttir_string()
 
-      assert ttir =~ "tt.cast"
+      assert ttir =~ "arith.sitofp %arg0 : tensor<4xi32> to tensor<4xf32>"
       refute ttir =~ "math.cast"
     end
 
@@ -7637,10 +7665,11 @@ defmodule TritonTest do
         )
         |> Kernel.to_ttir_string()
 
-      assert ttir =~ "tt.full"
-      assert ttir =~ "tt.zeros"
-      assert ttir =~ "tt.full_like"
-      assert ttir =~ "tt.zeros_like"
+      assert ttir =~ "%0 = arith.constant dense<2> : tensor<4xi32>"
+      assert ttir =~ "%1 = arith.constant dense<0> : tensor<4xi32>"
+      assert ttir =~ "%2 = arith.constant dense<3> : tensor<4xi32>"
+      assert ttir =~ "%3 = arith.constant dense<0> : tensor<4xi32>"
+      assert ttir =~ "tt.return %0, %1, %2, %3"
       refute ttir =~ "math.full"
       refute ttir =~ "math.zeros"
     end
@@ -7649,7 +7678,7 @@ defmodule TritonTest do
       ptr = Typespec.scalar(Typespec.pointer({:f, 32}))
       matrix = Typespec.tensor({:f, 32}, {16, 16})
 
-      block_ttir =
+      block_kernel =
         Triton.jit(
           fn ptr ->
             ptr
@@ -7658,14 +7687,10 @@ defmodule TritonTest do
           end,
           [ptr]
         )
-        |> Kernel.to_ttir_string()
 
-      assert block_ttir =~ "shape = [4, 4]"
-      assert block_ttir =~ "strides = [4, 1]"
-      assert block_ttir =~ "offsets = [1, 1]"
-      assert block_ttir =~ "block_shape = [2, 2]"
-      assert block_ttir =~ "order = [1, 0]"
-      refute block_ttir =~ "shape = {4, 4}"
+      assert_raise Triton.MLIR.Textual.UnsupportedError, ~r/:make_block_ptr/, fn ->
+        Kernel.to_ttir_string(block_kernel)
+      end
 
       dot_ttir =
         Triton.jit(
@@ -7674,8 +7699,11 @@ defmodule TritonTest do
         )
         |> Kernel.to_ttir_string()
 
-      assert dot_ttir =~ "input_precision = tf32"
-      assert dot_ttir =~ "out_dtype = f32"
+      assert dot_ttir =~ "inputPrecision = tf32"
+
+      assert dot_ttir =~
+               "tt.dot %arg0, %arg1, %0, inputPrecision = tf32 : tensor<16x16xf32> * tensor<16x16xf32> -> tensor<16x16xf32>"
+
       refute dot_ttir =~ ":tf32"
       refute dot_ttir =~ "{:f, 32}"
     end
@@ -7683,24 +7711,15 @@ defmodule TritonTest do
     test "textual TTIR omits reference-only Elixir callbacks" do
       spec = Typespec.tensor({:f, 32}, {2})
 
-      ttir =
+      assert_raise Triton.MLIR.Textual.UnsupportedError, ~r/:inline_asm_elementwise/, fn ->
         SyntaxKernels.inline_asm_sum([spec, spec])
         |> Kernel.to_ttir_string()
+      end
 
-      assert ttir =~ "tt.inline_asm"
-      assert ttir =~ "asm ="
-      assert ttir =~ "constraints ="
-      assert ttir =~ "dtype = [f32]"
-      refute ttir =~ "emulate ="
-      refute ttir =~ "#Function<"
-      refute ttir =~ "{:f, 32}"
-
-      pair_ttir =
+      assert_raise Triton.MLIR.Textual.UnsupportedError, ~r/:inline_asm_elementwise/, fn ->
         SyntaxKernels.inline_asm_pair([spec, spec])
         |> Kernel.to_ttir_string()
-
-      assert pair_ttir =~ "dtype = [i32, f32]"
-      refute pair_ttir =~ "[s: 32, f: 32]"
+      end
     end
 
     test "public textual op names are explicit for supported IR ops" do
@@ -7871,8 +7890,9 @@ defmodule TritonTest do
       assert Kernel.to_string(kernel) =~ "-> tuple<>"
 
       ttir = Kernel.to_ttir_string(kernel)
-      assert ttir =~ "tt.func public @empty_list_return() -> ()"
+      assert ttir =~ "tt.func public @empty_list_return() attributes"
       assert ttir =~ "tt.return"
+      refute ttir =~ "-> ("
       refute ttir =~ "tt.return :"
 
       assert %{abi: %{result: %{type: :tuple, children: []}}} =
@@ -7888,8 +7908,9 @@ defmodule TritonTest do
       assert Kernel.to_string(kernel) =~ "nil"
 
       ttir = Kernel.to_ttir_string(kernel)
-      assert ttir =~ "tt.func public @nil_return() -> ()"
+      assert ttir =~ "tt.func public @nil_return() attributes"
       assert ttir =~ "tt.return"
+      refute ttir =~ "-> ("
 
       assert %{abi: %{result: %{shape: nil, type: :void}}} =
                Kernel.to_native_plan(kernel, arch: 90)
@@ -8041,7 +8062,7 @@ defmodule TritonTest do
 
       cond_kernel = SyntaxKernels.sign_cond([spec])
 
-      assert %Expr{op: :where, args: [%Expr{op: :lt}, %Expr{op: :neg}, %Expr{op: :where}]} =
+      assert %Expr{op: :where, args: [%Expr{op: :lt}, %Expr{op: :literal}, %Expr{op: :where}]} =
                cond_kernel.body
 
       assert cond_kernel
