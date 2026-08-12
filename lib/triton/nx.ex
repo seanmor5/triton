@@ -181,14 +181,24 @@ defmodule Triton.Nx do
 
     {native_args, rebuild} = prepare_native_args(args)
 
+    # Always launch with `return: :args` so `rebuild` sees every binding;
+    # the user's `:return` selection is applied to the rebuilt Nx results.
     launch_opts =
       opts
-      |> Keyword.take([:grid, :device, :return])
-      |> Keyword.put_new(:return, :args)
+      |> Keyword.take([:grid, :device])
+      |> Keyword.put(:return, :args)
 
     case CUDA.launch(plan, native_args, launch_opts) do
-      {:ok, results} -> rebuild.(results)
-      {:error, failure} -> raise RuntimeError, "Triton native launch failed: #{inspect(failure)}"
+      {:ok, results} ->
+        rebuilt = rebuild.(results)
+
+        case Keyword.get(opts, :return, :args) do
+          :args -> rebuilt
+          {:arg, index} -> Enum.fetch!(rebuilt, index)
+        end
+
+      {:error, failure} ->
+        raise RuntimeError, "Triton native launch failed: #{inspect(failure)}"
     end
   end
 

@@ -80,6 +80,16 @@ defmodule Triton.Defn do
       raise ArgumentError, "Triton.Defn.kernel/4 supports at most #{@max_args} inputs"
     end
 
+    # Nx.block inputs must be tensors; plain numbers (scalar kernel
+    # arguments) ride along as rank-0 tensors and are demoted back to
+    # numbers before the launch.
+    inputs =
+      Enum.map(inputs, fn
+        value when is_integer(value) -> Nx.tensor(value, type: {:s, 32})
+        value when is_float(value) -> Nx.tensor(value, type: {:f, 32})
+        tensor -> tensor
+      end)
+
     block = %Block{
       kernel: kernel,
       output: output,
@@ -113,6 +123,13 @@ defmodule Triton.Defn do
   # Executes the kernel eagerly on concrete tensors: allocate outputs from the
   # template, place them in the argument list, launch, and collect outputs.
   defp execute(%Block{} = block, inputs) do
+    # Rank-0 tensors were promoted from scalar kernel arguments in kernel/4.
+    inputs =
+      Enum.map(inputs, fn
+        %{__struct__: Nx.Tensor, shape: {}} = tensor -> Nx.to_number(tensor)
+        other -> other
+      end)
+
     output_templates = flatten_output(block.output)
     outputs = Enum.map(output_templates, &allocate_output/1)
     {args, output_indices} = place_outputs(inputs, outputs, block.outputs)
