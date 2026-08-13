@@ -133,23 +133,46 @@ cached per tuning key in persistent terms.
 
 ### Nx and EXLA integration
 
-EXLA CUDA tensors pass into kernels **zero-copy** as raw device pointers and
-are mutated in place — the data never leaves the GPU:
+Every `defkernel` is directly callable with Nx tensors. Pass an
+`Nx.template` where the kernel expects an output pointer — the template's
+position marks the output, its shape/type describe the allocation, and the
+call returns the filled tensor. Loose keyword-tail keys set compile-time
+constants:
+
+```elixir
+x = Nx.iota({8, 1000}, type: :f32)
+out = MyKernels.softmax(x, Nx.template(Nx.shape(x), :f32), 1000,
+        grid: {8}, block: 1024)
+```
+
+Compilation is cached per argument-spec/constants, and EXLA CUDA tensors pass
+in **zero-copy** as raw device pointers — outputs are allocated on the same
+device, so the data never leaves the GPU:
 
 ```elixir
 Nx.default_backend({EXLA.Backend, client: :cuda})
 x = Nx.iota({2000}, type: :f32)                    # lives on the GPU
-out = Nx.broadcast(Nx.tensor(0.0, type: :f32), {2000})
-result = Triton.Nx.launch(kernel, [x, out, 2000], grid: {2, 1, 1}, return: {:arg, 1})
-# result is an EXLA.Backend tensor backed by the same device buffer
+out = MyKernels.softmax(x, Nx.template({2000}, :f32), 2000, grid: {2})
+# out is an EXLA.Backend tensor backed by a device buffer
 ```
 
-Kernels also compose inside `Nx.Defn` via `Triton.Defn.kernel/4` (wrap the
-call in a `deftransform`); under the default evaluator the kernel launches
-natively on the GPU. (Lowering through a fully `EXLA.jit`-compiled graph
-currently falls back to `Nx.runtime_call`, which hits a bug in EXLA 0.13.1's
-CUDA runtime-callback lowering — the planned XLA FFI custom-call handler will
-replace that path.)
+The same calls work inside `Nx.Defn` — wrap the launch in a `deftransform`
+so concrete shapes are available for the grid:
+
+```elixir
+defn model(x), do: x |> softmax() |> Nx.sum()
+
+deftransform softmax(x) do
+  {rows, cols} = Nx.shape(x)
+  MyKernels.softmax(x, Nx.template(Nx.shape(x), Nx.type(x)), cols,
+    grid: {rows}, block: 1024)
+end
+```
+
+Under the default evaluator the kernel launches natively on the GPU.
+(Lowering through a fully `EXLA.jit`-compiled graph currently falls back to
+`Nx.runtime_call`, which hits a bug in EXLA 0.13.1's CUDA runtime-callback
+lowering — the planned XLA FFI custom-call handler will replace that path.)
 
 ### GPU kernels under OTP
 
@@ -163,10 +186,14 @@ keeps serving — see `examples/05_hot_kernel_server.exs`.
 Runnable demos live in [`examples/`](examples/): TTIR inspection and hello
 world (`01_vector_add.exs`), fused softmax (`02_softmax.exs`), autotuned
 matmul (`03_matmul_autotuned.exs`), flash attention (`04_flash_attention.exs`),
-and the hot-swappable GPU kernel server (`05_hot_kernel_server.exs`), where a
+the hot-swappable GPU kernel server (`05_hot_kernel_server.exs`), where a
 GenServer keeps serving softmax requests while `Triton.Autotuner` retunes the
 kernel in a background Task and swaps it in atomically — zero dropped
-requests.
+requests, the Nx/defn integration (`06_nx_defn.exs`), where kernels run
+as tensor functions eagerly and inside `Nx.Defn` pipelines, fused-op
+comparisons against XLA (`07_layernorm_fused.exs`, `08_flash_attention_nx.exs`),
+and a Triton flash-attention layer inside an Axon transformer block raced
+against the vanilla EXLA-compiled model (`09_axon_triton_layer.exs`).
 
 ## Benchmarks
 
@@ -181,6 +208,13 @@ PyTorch/cuBLAS (full tables in [bench/RESULTS.md](bench/RESULTS.md)):
 
 Reproduce with `mix run bench/kernel_bench.exs` and
 `python3 bench/python_baselines.py`.
+
+`bench/nx_vs_triton_bench.exs` races Nx/EXLA (XLA on GPU) against the
+tensor-facing Triton calls end-to-end. XLA wins the ops it already fuses
+well (elementwise, row reductions, cuBLAS matmul); Triton wins where the
+algorithm changes — flash attention is 1.5x faster than XLA's materialized
+attention at seq=8192 and 2.1x at seq=16384 (full analysis in
+[bench/RESULTS.md](bench/RESULTS.md)).
 
 ## How it works
 
@@ -228,7 +262,7 @@ On machines where EXLA/XLA's CUDA userspace libraries come from pip
 ## Testing
 
 ```
-mix test                                  # 194 tests + doctests, no GPU needed
+mix test                                  # 200+ tests + doctests, no GPU needed
 mix test --include gpu                    # adds GPU↔interpreter property tests
 ```
 

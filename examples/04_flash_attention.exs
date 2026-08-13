@@ -36,7 +36,7 @@ defmodule Ex04.Kernels do
     l_i = zeros(shape: {bm}, dtype: float32())
     acc = zeros(shape: {bm, d}, dtype: float32())
 
-    {acc, m_i, l_i} =
+    {acc, _m_i, l_i} =
       for kk <- range(0, seq_len, bn), reduce: {acc, m_i, l_i} do
         {acc, m_i, l_i} ->
           offs_n = kk + arange(0, bn)

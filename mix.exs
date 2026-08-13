@@ -30,7 +30,9 @@ defmodule Triton.MixProject do
       # Optional zero-copy GPU tensor interop and defn compilation
       {:exla, "~> 0.13", optional: true},
       # Property-based differential testing of kernels (interpreter vs GPU)
-      {:stream_data, "~> 1.1", only: [:dev, :test]}
+      {:stream_data, "~> 1.1", only: [:dev, :test]},
+      # examples/09_axon_triton_layer.exs: Triton kernels inside an Axon model
+      {:axon, "~> 0.8", only: [:dev, :test]}
     ]
   end
 
