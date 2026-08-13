@@ -544,6 +544,38 @@ defmodule Triton.Language do
       Enum.all?(list, fn {key, _value} -> key in @defkernel_compile_opt_keys end)
   end
 
+  @doc """
+  Defines a named Triton kernel.
+
+  Default argument values become named compile-time constants (like
+  `tl.constexpr` in Python Triton). For a kernel
+
+      defkernel softmax(x_ptr, out_ptr, n_cols, block \\\\ 1024) do
+        ...
+      end
+
+  the following functions are generated:
+
+    * `softmax()`, `softmax(arg_specs)`, `softmax(arg_specs, opts)` —
+      compile the kernel with explicit argument specs (see `Triton.jit/3`)
+      and return a `%Triton.Kernel{}` for `Triton.launch/3`,
+      `Triton.Runtime.CUDA.launch/3`, or `Triton.Autotuner`.
+
+    * `softmax(x, out, n_cols)` and `softmax(x, out, n_cols, opts)` — the
+      tensor-facing call, taking one argument per non-constant kernel
+      parameter. Pass Nx tensors for pointer parameters and numbers for
+      scalars; pass an `Nx.template/2` in each argument slot the kernel
+      writes through — its position marks the output, its shape/type
+      describe the allocation, and the call returns the filled tensor (a
+      tuple, in template order, when there are several). Compilation is
+      cached per argument-spec/constants, EXLA CUDA tensors pass in
+      zero-copy, and the same call works inside `Nx.Defn` (wrap it in a
+      `deftransform` so concrete shapes are available for the grid). Known
+      option keys (`:grid`, `:backend`, `:name`, `:arch`, `:cache_dir`,
+      `:device`, `:num_warps`, `:num_ctas`, `:num_stages`, `:constants`)
+      configure the launch; any other key is shorthand for a named
+      constant, e.g. `block: 256`. See `Triton.Defn` for details.
+  """
   defmacro defkernel(call, opts \\ [], do: body) do
     opts = eval_defkernel_opts!(opts, __CALLER__)
 
@@ -578,39 +610,172 @@ defmodule Triton.Language do
 
     body = __kernel_ast__(body)
 
-    quote do
-      defp unquote(fun_name)() do
-        fn unquote_splicing(args) ->
-          unquote(body)
+    {dsl_import, tensor_call, tensor_call_with_opts} =
+      defkernel_tensor_call_asts(name, fun_name, args, arg_names, default_opts)
+
+    tensor_arity = tensor_call_arity(args, default_opts)
+
+    fun_def =
+      quote do
+        defp unquote(fun_name)() do
+          fn unquote_splicing(args) ->
+            unquote(body)
+          end
         end
       end
 
-      def unquote(name)() do
-        Triton.jit(unquote(fun_name)(), unquote(Macro.escape(default_opts)))
+    compile_arity_0 =
+      quote do
+        def unquote(name)() do
+          Triton.jit(unquote(fun_name)(), unquote(Macro.escape(default_opts)))
+        end
       end
 
-      def unquote(name)(args_or_opts) when is_list(args_or_opts) do
-        if Triton.Language.__compile_opts_list__?(args_or_opts) do
+    compile_arity_1 =
+      quote do
+        def unquote(name)(args_or_opts) when is_list(args_or_opts) do
+          if Triton.Language.__compile_opts_list__?(args_or_opts) do
+            Triton.jit(
+              unquote(fun_name)(),
+              args_or_opts
+              |> then(&Keyword.merge(unquote(Macro.escape(default_opts)), &1))
+              |> Keyword.put(:arg_names, unquote(arg_names))
+            )
+          else
+            Triton.jit(unquote(fun_name)(), args_or_opts, unquote(Macro.escape(default_opts)))
+          end
+        end
+      end
+
+    compile_arity_2 =
+      quote do
+        def unquote(name)(args, opts) when is_list(args) and is_list(opts) do
           Triton.jit(
             unquote(fun_name)(),
-            args_or_opts
+            args,
+            opts
             |> then(&Keyword.merge(unquote(Macro.escape(default_opts)), &1))
             |> Keyword.put(:arg_names, unquote(arg_names))
           )
-        else
-          Triton.jit(unquote(fun_name)(), args_or_opts, unquote(Macro.escape(default_opts)))
         end
       end
 
-      def unquote(name)(args, opts) when is_list(args) and is_list(opts) do
-        Triton.jit(
-          unquote(fun_name)(),
-          args,
-          opts
-          |> then(&Keyword.merge(unquote(Macro.escape(default_opts)), &1))
-          |> Keyword.put(:arg_names, unquote(arg_names))
-        )
+    # Clauses of the same name/arity must stay adjacent: the tensor-facing
+    # clause for a kernel with N runtime parameters shares arity N (and N + 1
+    # for the options variant) with the spec-list compile clauses when N <= 2.
+    definitions =
+      if tensor_arity == 1 do
+        [dsl_import, fun_def, compile_arity_0, compile_arity_1, tensor_call, compile_arity_2] ++
+          [tensor_call_with_opts]
+      else
+        [dsl_import, fun_def, compile_arity_0, compile_arity_1, compile_arity_2, tensor_call] ++
+          [tensor_call_with_opts]
       end
+
+    {:__block__, [], Enum.reject(definitions, &is_nil/1)}
+  end
+
+  # Kernel parameters that are not bound to compile-time constants at
+  # definition time; these become the tensor-facing call's signature.
+  defp defkernel_runtime_args(args, default_opts) do
+    constant_keys =
+      default_opts
+      |> Keyword.get(:constants, %{})
+      |> Map.new()
+      |> Map.keys()
+
+    args
+    |> Enum.with_index()
+    |> Enum.reject(fn {arg, index} ->
+      arg_name!(arg) in constant_keys or index in constant_keys
+    end)
+    |> Enum.map(&elem(&1, 0))
+  end
+
+  defp tensor_call_arity(args, default_opts),
+    do: length(defkernel_runtime_args(args, default_opts))
+
+  # Tensor-facing call clauses: `name(tensor_args...)` and
+  # `name(tensor_args..., opts)`, generated as Nx.Defn transforms so kernels
+  # are directly callable inside defn. Skipped when Nx is not available or
+  # every parameter is a constant.
+  defp defkernel_tensor_call_asts(name, fun_name, args, arg_names, default_opts) do
+    runtime_args = defkernel_runtime_args(args, default_opts)
+
+    if Code.ensure_loaded?(Nx.Defn) and match?([_ | _], runtime_args) do
+      [first | _rest] = runtime_args
+      opts_var = Macro.var(:opts, __MODULE__)
+
+      kernel_fun =
+        quote do
+          %Triton.KernelFunction{fun: unquote(fun_name)(), arg_names: unquote(arg_names)}
+        end
+
+      arity = length(runtime_args)
+      arity_with_opts = Kernel.+(arity, 1)
+
+      # When the kernel shares a name/arity with a DSL function (e.g.
+      # `defkernel softmax(...)`), the local definition must win: exclude the
+      # DSL import so the `__defn_*` companion generated by Nx.Defn's
+      # before_compile hook resolves the name unambiguously.
+      dsl_conflicts =
+        Enum.filter([{name, arity}, {name, arity_with_opts}], fn {fun, fun_arity} ->
+          function_exported?(__MODULE__, fun, fun_arity) or
+            macro_exported?(__MODULE__, fun, fun_arity)
+        end)
+
+      dsl_import =
+        unless Enum.empty?(dsl_conflicts) do
+          quote do
+            import Triton.Language, except: unquote(dsl_conflicts)
+          end
+        end
+
+      # Expanded form of `Nx.Defn.deftransform` (register + plain def): going
+      # through the deftransform macro trips Elixir's imported-vs-local
+      # conflict check when the kernel shares a name with a Triton.Language
+      # DSL function (e.g. `defkernel softmax`), while a def generated
+      # directly by this macro shadows the import as usual.
+      tensor_call =
+        quote do
+          Nx.Defn.__define__(__MODULE__, :def, unquote(name), unquote(arity), :transform, %{})
+
+          def unquote(name)(unquote_splicing(runtime_args))
+              when Kernel.not(is_list(unquote(first))) do
+            Triton.Defn.__kernel_call__(
+              unquote(kernel_fun),
+              unquote(Macro.escape(default_opts)),
+              [unquote_splicing(runtime_args)],
+              []
+            )
+          end
+        end
+
+      tensor_call_with_opts =
+        quote do
+          Nx.Defn.__define__(
+            __MODULE__,
+            :def,
+            unquote(name),
+            unquote(arity_with_opts),
+            :transform,
+            %{}
+          )
+
+          def unquote(name)(unquote_splicing(runtime_args), unquote(opts_var))
+              when Kernel.not(is_list(unquote(first))) and is_list(unquote(opts_var)) do
+            Triton.Defn.__kernel_call__(
+              unquote(kernel_fun),
+              unquote(Macro.escape(default_opts)),
+              [unquote_splicing(runtime_args)],
+              unquote(opts_var)
+            )
+          end
+        end
+
+      {dsl_import, tensor_call, tensor_call_with_opts}
+    else
+      {nil, nil, nil}
     end
   end
 

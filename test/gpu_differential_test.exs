@@ -325,6 +325,51 @@ defmodule Triton.GPUDifferentialTest do
       end
     end
 
+    # -- tensor-facing calls -------------------------------------------------
+
+    describe "tensor-facing defkernel calls" do
+      test "run natively with zero-copy EXLA device tensors" do
+        n = 1000
+        block = 256
+        x = Nx.iota({n}, type: :f32, backend: EXLA.Backend)
+        y = Nx.multiply(Nx.iota({n}, type: :f32, backend: EXLA.Backend), 2.0)
+
+        out = Kernels.add(x, y, Nx.template({n}, :f32), n, grid: {cdiv(n, block)}, block: block)
+
+        assert Triton.Nx.cuda_backed?(out)
+        assert Nx.to_flat_list(out) == Nx.to_flat_list(Nx.add(x, y))
+      end
+
+      test "run natively with host tensors" do
+        n = 500
+        block = 128
+        x = Nx.iota({n}, type: :f32, backend: Nx.BinaryBackend)
+        y = Nx.broadcast(Nx.tensor(1.0, type: :f32, backend: Nx.BinaryBackend), {n})
+
+        out = Kernels.add(x, y, Nx.template({n}, :f32), n, grid: {cdiv(n, block)}, block: block)
+
+        assert Nx.to_flat_list(out) == Enum.map(0..(n - 1), &(&1 + 1.0))
+      end
+
+      test "softmax rows match Nx on the GPU" do
+        rows = 8
+        cols = 64
+        x = Nx.multiply(Nx.iota({rows, cols}, type: :f32, backend: EXLA.Backend), 0.01)
+
+        out =
+          Kernels.softmax(x, Nx.template({rows, cols}, :f32), cols,
+            grid: {rows},
+            block: cols
+          )
+
+        maxes = Nx.reduce_max(x, axes: [1], keep_axes: true)
+        e = Nx.exp(Nx.subtract(x, maxes))
+        expected = Nx.divide(e, Nx.sum(e, axes: [1], keep_axes: true))
+
+        assert Nx.all_close(out, expected, atol: 1.0e-6, rtol: 1.0e-4) |> Nx.to_number() == 1
+      end
+    end
+
     # -- helpers -------------------------------------------------------------
 
     defp compile_pair(kernel_fun, specs, constants, name) do
@@ -355,6 +400,11 @@ defmodule Triton.GPUDifferentialTest do
       |> StreamData.member_of()
       |> StreamData.list_of(min_length: 1, max_length: 4)
       |> StreamData.filter(fn ops -> Enum.count(ops, &(&1 == :exp)) <= 2 end)
+      # A second `log` is ill-conditioned: when the first lands near 1 its
+      # result is ~0 with ulp-level absolute error (f64 interpreter vs f32
+      # GPU), and the second log turns that into a large relative error
+      # (e.g. [:exp, :log, :log] at x=0 differs by 2e-2).
+      |> StreamData.filter(fn ops -> Enum.count(ops, &(&1 == :log)) <= 1 end)
       |> StreamData.filter(&no_discontinuity_after_transcendental?/1)
     end
 

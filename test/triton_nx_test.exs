@@ -18,10 +18,29 @@ defmodule TritonNxTest do
       offsets = arange(0, block_size)
       store(out_ptr + offsets, load(x_ptr + offsets) * 2.0)
     end
+
+    defkernel add_scalar(x_ptr, out_ptr, amount, block \\ 4) do
+      offsets = arange(0, block)
+      store(out_ptr + offsets, load(x_ptr + offsets) + amount)
+    end
+
+    defkernel add_into_middle(x_ptr, out_ptr, y_ptr, block \\ 4) do
+      offsets = arange(0, block)
+      store(out_ptr + offsets, load(x_ptr + offsets) + load(y_ptr + offsets))
+    end
+
+    defkernel scale_pair(x_ptr, doubled_ptr, tripled_ptr, block \\ 4) do
+      offsets = arange(0, block)
+      x = load(x_ptr + offsets)
+      store(doubled_ptr + offsets, x * 2.0)
+      store(tripled_ptr + offsets, x * 3.0)
+    end
   end
 
   defmodule DefnPipelines do
     import Nx.Defn
+
+    alias TritonNxTest.Kernels
 
     defn double_and_sum(x) do
       x |> double() |> Nx.sum()
@@ -36,6 +55,22 @@ defmodule TritonNxTest do
         offsets = arange(0, 4)
         store(out_ptr + offsets, load(x_ptr + offsets) * 2.0)
       end)
+    end
+
+    defn tensor_double_and_sum(x) do
+      x |> tensor_double() |> Nx.sum()
+    end
+
+    deftransform tensor_double(x) do
+      Kernels.double(x, Nx.template(Nx.shape(x), Nx.type(x)), grid: 1)
+    end
+
+    defn shift_and_sum(x, amount) do
+      x |> shifted(amount) |> Nx.sum()
+    end
+
+    deftransform shifted(x, amount) do
+      Kernels.add_scalar(x, Nx.template(Nx.shape(x), Nx.type(x)), amount, grid: 1)
     end
   end
 
@@ -158,6 +193,83 @@ defmodule TritonNxTest do
 
       assert Nx.to_flat_list(doubled) == [2.0, 4.0, 6.0, 8.0]
       assert Nx.to_flat_list(tripled) == [3.0, 6.0, 9.0, 12.0]
+    end
+  end
+
+  describe "defkernel tensor calls" do
+    test "a template argument marks the output slot eagerly" do
+      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: :f32)
+
+      result = Kernels.double(x, Nx.template({4}, :f32), grid: 1)
+
+      assert Nx.to_flat_list(result) == [2.0, 4.0, 6.0, 8.0]
+      assert result.type == {:f, 32}
+    end
+
+    test "loose keyword-tail keys override signature constants" do
+      x = Nx.tensor([1.0, 2.0], type: :f32)
+
+      result = Kernels.double(x, Nx.template({2}, :f32), grid: 1, block_size: 2)
+
+      assert Nx.to_flat_list(result) == [2.0, 4.0]
+    end
+
+    test "runtime scalar arguments pass through" do
+      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: :f32)
+
+      result = Kernels.add_scalar(x, Nx.template({4}, :f32), 10.0, grid: 1)
+
+      assert Nx.to_flat_list(result) == [11.0, 12.0, 13.0, 14.0]
+    end
+
+    test "the template can sit in any argument position" do
+      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: :f32)
+      y = Nx.tensor([10.0, 20.0, 30.0, 40.0], type: :f32)
+
+      result = Kernels.add_into_middle(x, Nx.template({4}, :f32), y, grid: 1)
+
+      assert Nx.to_flat_list(result) == [11.0, 22.0, 33.0, 44.0]
+    end
+
+    test "multiple templates return a tuple in template order" do
+      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: :f32)
+
+      {doubled, tripled} =
+        Kernels.scale_pair(x, Nx.template({4}, :f32), Nx.template({4}, :f32), grid: 1)
+
+      assert Nx.to_flat_list(doubled) == [2.0, 4.0, 6.0, 8.0]
+      assert Nx.to_flat_list(tripled) == [3.0, 6.0, 9.0, 12.0]
+    end
+
+    test "is callable inside defn through a deftransform launcher" do
+      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: :f32)
+
+      assert DefnPipelines.tensor_double_and_sum(x) |> Nx.to_number() == 20.0
+    end
+
+    test "promotes defn scalar arguments inside defn" do
+      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: :f32)
+
+      assert DefnPipelines.shift_and_sum(x, 10.0) |> Nx.to_number() == 50.0
+    end
+
+    test "raises when no argument is a template" do
+      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: :f32)
+
+      assert_raise ArgumentError, ~r/Nx\.template/, fn ->
+        Kernels.double(x, x, grid: 1)
+      end
+    end
+
+    test "spec-based compile clauses still work alongside tensor calls" do
+      specs = [
+        Triton.scalar_spec(Triton.ptr(:float32)),
+        Triton.scalar_spec(Triton.ptr(:float32))
+      ]
+
+      kernel = Kernels.double(specs, constants: [block_size: 4])
+
+      assert %Triton.Kernel{} = kernel
     end
   end
 

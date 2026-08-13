@@ -1,8 +1,12 @@
 defmodule Triton.Nx do
   @moduledoc """
-  Eager Nx integration for Triton kernels.
+  Low-level Nx launch plumbing for Triton kernels.
 
-  This module makes Nx tensors first-class Triton runtime values:
+  Most code should not call this module directly: every `defkernel` is
+  callable with Nx tensors — pass an `Nx.template/2` in the output argument
+  slot and the call allocates, launches, and returns the result (see
+  `Triton.Defn` and `Triton.Language.defkernel/3`). This module is what
+  those calls run on:
 
     * `run/3` and `launch/3` execute kernels with Nx tensor arguments and
       return Nx tensors, through the reference interpreter or the native CUDA
@@ -14,7 +18,8 @@ defmodule Triton.Nx do
     * `from_pointer/3` wraps a device buffer produced by a Triton launch back
       into an EXLA tensor without copying.
 
-  ## Examples
+  Reach for it directly when you need explicit control over argument
+  buffers — for example launching into a preallocated output tensor:
 
       kernel =
         Triton.kernel(fn x_ptr, out_ptr, block_size ->
@@ -99,13 +104,20 @@ defmodule Triton.Nx do
     end
   end
 
-  defp launch_arg_spec(%{__struct__: Nx.Tensor, type: type}),
+  @doc false
+  # Kernel argument spec for a launch argument, following Triton's convention:
+  # tensors are device buffers (pointer params), scalars are scalar params,
+  # and float scalars specialize to f32 (as in Python Triton) so they don't
+  # promote f32 tensor math to f64.
+  def launch_arg_spec(%{__struct__: Nx.Tensor, type: type}),
     do: Triton.scalar_spec(Triton.ptr(type))
 
-  defp launch_arg_spec({:device_pointer, _address}),
+  def launch_arg_spec({:device_pointer, _address}),
     do: Triton.scalar_spec(Triton.ptr(:float32))
 
-  defp launch_arg_spec(value), do: Triton.spec(value)
+  def launch_arg_spec(value) when is_float(value), do: Triton.scalar_spec({:f, 32})
+
+  def launch_arg_spec(value), do: Triton.spec(value)
 
   @doc """
   Whether native GPU execution is available for Nx tensors on this machine.
