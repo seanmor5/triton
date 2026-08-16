@@ -37,6 +37,39 @@ defmodule TritonNxTest do
     end
   end
 
+  defmodule DeclaredKernels do
+    use Triton.Language
+
+    defkernel double(x_ptr, out_ptr, n, block \\ 256),
+      out: :out_ptr,
+      grid: fn %{n: n, block: block} -> {Triton.cdiv(n, block)} end do
+      offs = program_id(0) * block + arange(0, block)
+      mask = offs < n
+      store(out_ptr + offs, load(x_ptr + offs, mask: mask, other: 0.0) * 2.0, mask: mask)
+    end
+
+    defkernel add_pair(x_ptr, doubled_ptr, y_ptr, tripled_ptr, n, block \\ 256),
+      out: [:doubled_ptr, :tripled_ptr],
+      grid: fn %{n: n, block: block} -> {Triton.cdiv(n, block)} end do
+      offs = program_id(0) * block + arange(0, block)
+      mask = offs < n
+      x = load(x_ptr + offs, mask: mask, other: 0.0)
+      y = load(y_ptr + offs, mask: mask, other: 0.0)
+      store(doubled_ptr + offs, x * 2.0 + y, mask: mask)
+      store(tripled_ptr + offs, x * 3.0 + y, mask: mask)
+    end
+
+    defkernel row_sum(x_ptr, out_ptr, n_cols, block \\ 64),
+      out: [out_ptr: fn %{x_ptr: x} -> Nx.template({elem(Nx.shape(x), 0)}, Nx.type(x)) end],
+      grid: fn %{x_ptr: x} -> {elem(Nx.shape(x), 0)} end do
+      row = program_id(0)
+      offs = arange(0, block)
+      mask = offs < n_cols
+      x = load(x_ptr + row * n_cols + offs, mask: mask, other: 0.0)
+      store(out_ptr + row, sum(x, axis: 0))
+    end
+  end
+
   defmodule DefnPipelines do
     import Nx.Defn
 
@@ -72,27 +105,33 @@ defmodule TritonNxTest do
     deftransform shifted(x, amount) do
       Kernels.add_scalar(x, Nx.template(Nx.shape(x), Nx.type(x)), amount, grid: 1)
     end
+
+    # Declared kernels need no deftransform launcher: the call is
+    # self-describing and usable directly inside defn.
+    defn declared_double_and_sum(x) do
+      x |> TritonNxTest.DeclaredKernels.double(8) |> Nx.sum()
+    end
   end
 
-  describe "Triton.Nx.run" do
+  describe "Triton.Defn.nx_run (internal Nx launch plumbing)" do
     test "runs functional kernels with Nx tensors and returns Nx tensors" do
       x = Nx.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
 
-      result = Triton.Nx.run(fn t -> Tl.sum(t, axis: 1) end, [x])
+      result = Triton.Defn.nx_run(fn t -> Tl.sum(t, axis: 1) end, [x])
 
       assert Nx.to_flat_list(result) == [6.0, 15.0]
     end
 
     test "passes scalars through" do
-      x = Nx.tensor([1.0, 2.0], type: {:f, 32})
+      x = Nx.tensor([1.0, 2.0], type: :f32)
 
-      result = Triton.Nx.run(fn t -> Tl.maximum(t, 1.5) end, [x])
+      result = Triton.Defn.nx_run(fn t -> Tl.maximum(t, 1.5) end, [x])
 
       assert Nx.to_flat_list(result) == [1.5, 2.0]
     end
   end
 
-  describe "Triton.Nx.launch" do
+  describe "Triton.Defn.nx_launch (internal Nx launch plumbing)" do
     test "treats Nx tensors as device buffers for store-based kernels" do
       kernel =
         Triton.kernel(fn x_ptr, out_ptr ->
@@ -100,27 +139,27 @@ defmodule TritonNxTest do
           store(out_ptr + offsets, load(x_ptr + offsets) * 2.0)
         end)
 
-      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: {:f, 32})
-      out = Nx.broadcast(Nx.tensor(0.0, type: {:f, 32}), {4})
+      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: :f32)
+      out = Nx.broadcast(Nx.tensor(0.0, type: :f32), {4})
 
-      assert [_x, result] = Triton.Nx.launch(kernel, [x, out], grid: 1)
+      assert [_x, result] = Triton.Defn.nx_launch(kernel, [x, out], grid: 1)
       assert Nx.to_flat_list(result) == [2.0, 4.0, 6.0, 8.0]
     end
 
     test "supports defkernel kernels with named constants" do
-      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: {:f, 32})
-      out = Nx.broadcast(Nx.tensor(0.0, type: {:f, 32}), {4})
+      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: :f32)
+      out = Nx.broadcast(Nx.tensor(0.0, type: :f32), {4})
 
       kernel =
         Kernels.double(
           [
-            Triton.scalar_spec(Triton.ptr(:float32)),
-            Triton.scalar_spec(Triton.ptr(:float32))
+            Triton.scalar_spec(Triton.ptr(:f32)),
+            Triton.scalar_spec(Triton.ptr(:f32))
           ],
           constants: [block_size: 4]
         )
 
-      assert [_x, result] = Triton.Nx.launch(kernel, [x, out], grid: 1)
+      assert [_x, result] = Triton.Defn.nx_launch(kernel, [x, out], grid: 1)
       assert Nx.to_flat_list(result) == [2.0, 4.0, 6.0, 8.0]
     end
 
@@ -131,28 +170,25 @@ defmodule TritonNxTest do
           store(out_ptr + offsets, load(x_ptr + offsets) + 1.0)
         end)
 
-      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: {:f, 32})
-      out = Nx.broadcast(Nx.tensor(0.0, type: {:f, 32}), {4})
+      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: :f32)
+      out = Nx.broadcast(Nx.tensor(0.0, type: :f32), {4})
 
-      result = Triton.Nx.launch(kernel, [x, out], grid: 1, return: {:arg, 1})
+      result = Triton.Defn.nx_launch(kernel, [x, out], grid: 1, return: {:arg, 1})
       assert Nx.to_flat_list(result) == [2.0, 3.0, 4.0, 5.0]
     end
   end
 
-  describe "Triton.Nx device helpers" do
+  describe "Triton.Runtime.CUDA device helpers" do
     test "device_pointer returns :error for host tensors" do
-      assert :error = Triton.Nx.device_pointer(Nx.tensor([1.0]))
-      assert :error = Triton.Nx.device_pointer([1.0])
+      assert :error = Triton.Runtime.CUDA.device_pointer(Nx.tensor([1.0]))
+      assert :error = Triton.Runtime.CUDA.device_pointer([1.0])
     end
 
     test "cuda_backed? is false for host tensors" do
-      refute Triton.Nx.cuda_backed?(Nx.tensor([1.0]))
-      refute Triton.Nx.cuda_backed?(:not_a_tensor)
+      refute Triton.Runtime.CUDA.device_backed?(Nx.tensor([1.0]))
+      refute Triton.Runtime.CUDA.device_backed?(:not_a_tensor)
     end
 
-    test "native_available? reflects the runtime" do
-      assert Triton.Nx.native_available?() == Triton.Runtime.CUDA.available?()
-    end
   end
 
   describe "Triton.Defn.kernel" do
@@ -163,7 +199,7 @@ defmodule TritonNxTest do
           store(out_ptr + offsets, load(x_ptr + offsets) * 2.0)
         end)
 
-      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: {:f, 32})
+      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: :f32)
 
       result = Triton.Defn.kernel(kernel, [x], Nx.template({4}, :f32), grid: 1)
 
@@ -172,7 +208,7 @@ defmodule TritonNxTest do
     end
 
     test "works inside defn computations" do
-      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: {:f, 32})
+      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: :f32)
 
       assert DefnPipelines.double_and_sum(x) |> Nx.to_number() == 20.0
     end
@@ -186,7 +222,7 @@ defmodule TritonNxTest do
           store(tripled_ptr + offsets, x * 3.0)
         end)
 
-      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: {:f, 32})
+      x = Nx.tensor([1.0, 2.0, 3.0, 4.0], type: :f32)
       template = {Nx.template({4}, :f32), Nx.template({4}, :f32)}
 
       {doubled, tripled} = Triton.Defn.kernel(kernel, [x], template, grid: 1)
@@ -263,13 +299,194 @@ defmodule TritonNxTest do
 
     test "spec-based compile clauses still work alongside tensor calls" do
       specs = [
-        Triton.scalar_spec(Triton.ptr(:float32)),
-        Triton.scalar_spec(Triton.ptr(:float32))
+        Triton.scalar_spec(Triton.ptr(:f32)),
+        Triton.scalar_spec(Triton.ptr(:f32))
       ]
 
       kernel = Kernels.double(specs, constants: [block_size: 4])
 
       assert %Triton.Kernel{} = kernel
+    end
+  end
+
+  describe "defkernel out:/grid: declarations" do
+    test "declared calls take only inputs and return the output" do
+      x = Nx.iota({8}, type: :f32)
+
+      out = DeclaredKernels.double(x, 8)
+
+      assert Nx.to_flat_list(out) == Nx.to_flat_list(Nx.multiply(x, 2.0))
+    end
+
+    test "keyword-tail constants and grid overrides still apply" do
+      x = Nx.iota({8}, type: :f32)
+
+      assert DeclaredKernels.double(x, 8, block: 4) |> Nx.to_flat_list() ==
+               Nx.multiply(x, 2.0) |> Nx.to_flat_list()
+
+      assert DeclaredKernels.double(x, 8, grid: {2}, block: 4) |> Nx.to_flat_list() ==
+               Nx.multiply(x, 2.0) |> Nx.to_flat_list()
+    end
+
+    test "multiple declared outputs return a tuple, even mid-signature" do
+      x = Nx.iota({8}, type: :f32)
+      y = Nx.broadcast(Nx.tensor(1.0, type: :f32), {8})
+
+      {doubled, tripled} = DeclaredKernels.add_pair(x, y, 8)
+
+      assert Nx.to_flat_list(doubled) == Nx.add(Nx.multiply(x, 2.0), y) |> Nx.to_flat_list()
+      assert Nx.to_flat_list(tripled) == Nx.add(Nx.multiply(x, 3.0), y) |> Nx.to_flat_list()
+    end
+
+    test "fn-form out specs support shapes derived from the inputs" do
+      x = Nx.iota({4, 8}, type: :f32)
+
+      sums = DeclaredKernels.row_sum(x, 8, block: 8)
+
+      assert Nx.shape(sums) == {4}
+      assert Nx.to_flat_list(sums) == Nx.sum(x, axes: [1]) |> Nx.to_flat_list()
+    end
+
+    test "declared calls work directly inside defn without a launcher" do
+      x = Nx.iota({8}, type: :f32)
+
+      assert DefnPipelines.declared_double_and_sum(x) |> Nx.to_number() == 56.0
+    end
+
+    test "the out: option overrides the declared template" do
+      x = Nx.iota({8}, type: :f32)
+
+      out = DeclaredKernels.double(x, 8, out: Nx.template({8}, :f32))
+
+      assert Nx.to_flat_list(out) == Nx.multiply(x, 2.0) |> Nx.to_flat_list()
+    end
+
+    test "typo'd loose options raise instead of becoming constants" do
+      x = Nx.iota({8}, type: :f32)
+
+      error =
+        assert_raise ArgumentError, ~r/unknown option :gird/, fn ->
+          DeclaredKernels.double(x, 8, gird: {2})
+        end
+
+      assert error.message =~ "Did you mean :grid?"
+
+      assert_raise ArgumentError, ~r/unknown option :blok.*Did you mean :block\?/s, fn ->
+        DeclaredKernels.double(x, 8, blok: 4)
+      end
+    end
+
+    test "@doc on defkernel attaches to the tensor-facing call" do
+      source = """
+      defmodule TritonNxTest.DocProbe do
+        use Triton.Language
+
+        @doc "Doubles a tensor, element by element."
+        defkernel doubled(x_ptr, out_ptr, block \\\\ 8),
+          out: :out_ptr,
+          grid: fn _args -> {1} end do
+          offs = arange(0, block)
+          store(out_ptr + offs, load(x_ptr + offs) * 2.0)
+        end
+      end
+      """
+
+      dir = Path.join(System.tmp_dir!(), "triton_doc_probe_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      src_path = Path.join(dir, "doc_probe.ex")
+      File.write!(src_path, source)
+
+      docs_before = Code.get_compiler_option(:docs)
+      Code.put_compiler_option(:docs, true)
+
+      try do
+        {:ok, [module], warnings} = Kernel.ParallelCompiler.compile_to_path([src_path], dir)
+
+        # Pre-fix, the pending @doc attached to a generated defp and was
+        # discarded with a warning.
+        refute Enum.any?(warnings, &(&1.message =~ "@doc"))
+
+        {:docs_v1, _, _, _, _, _, docs} = Code.fetch_docs(Path.join(dir, "#{module}.beam"))
+
+        doc =
+          Enum.find_value(docs, fn
+            {{:function, :doubled, 1}, _line, _sig, %{"en" => doc}, _meta} -> doc
+            _other -> nil
+          end)
+
+        assert doc =~ "Doubles a tensor"
+      after
+        Code.put_compiler_option(:docs, docs_before)
+        File.rm_rf!(dir)
+      end
+    end
+
+    test "declaring an unknown or constant parameter raises at definition" do
+      assert_raise ArgumentError, ~r/no such parameter/, fn ->
+        defmodule BadOutName do
+          use Triton.Language
+
+          defkernel bad(x_ptr, out_ptr), out: :nope do
+            store(out_ptr + arange(0, 4), load(x_ptr + arange(0, 4)))
+          end
+        end
+      end
+
+      assert_raise ArgumentError, ~r/compile-time constant/, fn ->
+        defmodule BadOutConstant do
+          use Triton.Language
+
+          defkernel bad(x_ptr, out_ptr, block \\ 4), out: :block do
+            store(out_ptr + arange(0, block), load(x_ptr + arange(0, block)))
+          end
+        end
+      end
+    end
+  end
+
+  describe "telemetry" do
+    defp attach_events(events) do
+      ref = make_ref()
+      test_pid = self()
+
+      :telemetry.attach_many(
+        {ref, :triton_test},
+        events,
+        fn event, measurements, metadata, _config ->
+          send(test_pid, {:telemetry, event, measurements, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach({ref, :triton_test}) end)
+    end
+
+    test "compile emits a span with backend and name" do
+      attach_events([[:triton, :compile, :start], [:triton, :compile, :stop]])
+
+      Triton.jit(fn x -> Tl.maximum(x, 0.0) end, [Triton.tensor_spec(:f32, {4})],
+        name: "telemetry_probe"
+      )
+
+      assert_receive {:telemetry, [:triton, :compile, :start], _,
+                      %{backend: :expr, name: "telemetry_probe"}}
+
+      assert_receive {:telemetry, [:triton, :compile, :stop], %{duration: duration},
+                      %{backend: :expr, name: "telemetry_probe"}}
+
+      assert is_integer(duration) and duration > 0
+    end
+
+    test "tensor-call kernel cache emits miss then hit" do
+      attach_events([[:triton, :cache, :miss], [:triton, :cache, :hit]])
+
+      x = Nx.iota({16}, type: :f32, backend: Nx.BinaryBackend)
+
+      DeclaredKernels.double(x, 16, block: 16)
+      assert_receive {:telemetry, [:triton, :cache, :miss], _, %{cache: :kernel}}
+
+      DeclaredKernels.double(x, 16, block: 16)
+      assert_receive {:telemetry, [:triton, :cache, :hit], _, %{cache: :kernel}}
     end
   end
 
@@ -286,7 +503,7 @@ defmodule TritonNxTest do
         kernel =
           Triton.jit(
             fn x -> Tl.maximum(x, 0.0) end,
-            [Triton.tensor_spec(:float32, {4})],
+            [Triton.tensor_spec(:f32, {4})],
             backend: :native_plan,
             arch: "sm_90"
           )
@@ -298,11 +515,36 @@ defmodule TritonNxTest do
       end
     end
 
+    test "launch! and bench! raise instead of returning error tuples" do
+      unless Triton.NIF.native_available?() do
+        kernel =
+          Triton.jit(
+            fn x_ptr, out_ptr ->
+              offsets = Tl.arange(0, 4)
+              Tl.store(Tl.add(out_ptr, offsets), Tl.load(Tl.add(x_ptr, offsets)))
+            end,
+            [Triton.scalar_spec(Triton.ptr(:f32)), Triton.scalar_spec(Triton.ptr(:f32))],
+            backend: :native_plan,
+            arch: "sm_90"
+          )
+
+        args = [[1.0, 2.0, 3.0, 4.0], [0.0, 0.0, 0.0, 0.0]]
+
+        assert_raise RuntimeError, fn ->
+          Triton.Runtime.CUDA.launch!(kernel.compiled, args)
+        end
+
+        assert_raise RuntimeError, fn ->
+          Triton.Runtime.CUDA.bench!(kernel.compiled, args)
+        end
+      end
+    end
+
     test "launch requires void (store-based) kernels" do
       kernel =
         Triton.jit(
           fn x -> Tl.maximum(x, 0.0) end,
-          [Triton.tensor_spec(:float32, {4})],
+          [Triton.tensor_spec(:f32, {4})],
           backend: :native_plan,
           arch: "sm_90"
         )

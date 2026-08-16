@@ -52,8 +52,8 @@ end
 defmodule Bench.Run do
   alias Triton.Runtime.CUDA
 
-  @f32 Triton.ptr(:float32)
-  @i32 Triton.scalar_spec({:s, 32})
+  @f32 Triton.ptr(:f32)
+  @i32 Triton.scalar_spec(:s32)
 
   def random_f32(count) do
     for(_ <- 1..count, into: <<>>, do: <<:rand.uniform() - 0.5::float-32-little>>)
@@ -85,8 +85,8 @@ defmodule Bench.Run do
       y = random_f32(n)
       out = :binary.copy(<<0::size(n * 32)>>)
 
-      {:ok, stats} =
-        CUDA.bench(kernel.compiled, [x, y, out, n], grid: {cdiv(n, block), 1, 1})
+      stats =
+        CUDA.bench!(kernel.compiled, [x, y, out, n], grid: {cdiv(n, block), 1, 1})
 
       gbps = 3 * n * 4 / (stats.avg_ms * 1.0e-3) / 1.0e9
       report("n=2^#{pow}", stats.avg_ms, "#{Float.round(gbps, 1)} GB/s")
@@ -111,7 +111,7 @@ defmodule Bench.Run do
       x = random_f32(rows * cols)
       out = :binary.copy(<<0::size(rows * cols * 32)>>)
 
-      {:ok, stats} = CUDA.bench(kernel.compiled, [x, out, cols], grid: {rows, 1, 1})
+      stats = CUDA.bench!(kernel.compiled, [x, out, cols], grid: {rows, 1, 1})
 
       gbps = 2 * rows * cols * 4 / (stats.avg_ms * 1.0e-3) / 1.0e9
       report("4096x#{cols}", stats.avg_ms, "#{Float.round(gbps, 1)} GB/s")
@@ -138,8 +138,8 @@ defmodule Bench.Run do
       b = random_f32(k * n)
       c = :binary.copy(<<0::size(m * n * 32)>>)
 
-      {:ok, stats} =
-        CUDA.bench(kernel.compiled, [a, b, c, m, n], grid: {cdiv(m, bm), cdiv(n, bn), 1})
+      stats =
+        CUDA.bench!(kernel.compiled, [a, b, c, m, n], grid: {cdiv(m, bm), cdiv(n, bn), 1})
 
       tflops = 2 * m * n * k / (stats.avg_ms * 1.0e-3) / 1.0e12
       report("#{m}x#{n}x#{k}", stats.avg_ms, "#{Float.round(tflops, 2)} TFLOPS")

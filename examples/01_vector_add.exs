@@ -34,8 +34,8 @@ defmodule Ex01.Run do
   import Bitwise
   alias Triton.Runtime.CUDA
 
-  @f32 Triton.ptr(:float32)
-  @i32 Triton.scalar_spec({:s, 32})
+  @f32 Triton.ptr(:f32)
+  @i32 Triton.scalar_spec(:s32)
   @specs [@f32, @f32, @f32, @i32]
 
   def cdiv(a, b), do: div(a + b - 1, b)
@@ -102,8 +102,8 @@ defmodule Ex01.Run do
     y = random_f32_bin(n)
     out = :binary.copy(<<0::size(n * 32)>>)
 
-    {:ok, gpu_bin} =
-      CUDA.launch(kernel.compiled, [x, y, out, n],
+    gpu_bin =
+      CUDA.launch!(kernel.compiled, [x, y, out, n],
         grid: {cdiv(n, block), 1, 1},
         return: {:arg, 2}
       )
@@ -128,8 +128,8 @@ defmodule Ex01.Run do
     y_big = random_f32_bin(n_big)
     out_big = :binary.copy(<<0::size(n_big * 32)>>)
 
-    {:ok, stats} =
-      CUDA.bench(kernel.compiled, [x_big, y_big, out_big, n_big],
+    stats =
+      CUDA.bench!(kernel.compiled, [x_big, y_big, out_big, n_big],
         grid: {cdiv(n_big, block), 1, 1},
         warmup: 10,
         reps: 50

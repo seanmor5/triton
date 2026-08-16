@@ -12,8 +12,6 @@ defmodule Triton.Runtime.CUDA do
   current machine.
   """
 
-  import Bitwise
-
   alias Triton.Compiler.NativePlan
 
   defmodule Executable do
@@ -64,6 +62,77 @@ defmodule Triton.Runtime.CUDA do
   end
 
   @doc """
+  Whether a tensor is backed by an EXLA CUDA device buffer.
+
+  Device-backed tensors pass into native launches zero-copy as raw device
+  pointers.
+  """
+  def device_backed?(%Nx.Tensor{data: %{__struct__: data_struct} = data}) do
+    exla_loaded?() and data_struct == EXLA.Backend and cuda_buffer?(data)
+  rescue
+    _error -> false
+  end
+
+  def device_backed?(_other), do: false
+
+  @doc """
+  Extracts a raw CUDA device pointer from an EXLA CUDA-backed tensor.
+
+  Returns `{:ok, address}` for zero-copy native launches, or `:error` when
+  the tensor lives on the host or another backend.
+  """
+  def device_pointer(%Nx.Tensor{} = tensor) do
+    if device_backed?(tensor) do
+      case Nx.to_pointer(tensor, mode: :local) do
+        %Nx.Pointer{address: address} -> {:ok, address}
+        _other -> :error
+      end
+    else
+      :error
+    end
+  rescue
+    _error -> :error
+  end
+
+  def device_pointer(_other), do: :error
+
+  @doc """
+  Wraps an existing CUDA device pointer as an EXLA tensor without copying.
+
+  `template` provides shape/type, e.g. `Nx.template({128}, :f32)`.
+  """
+  def from_pointer(address, template, opts \\ []) when is_integer(address) do
+    unless exla_loaded?() do
+      raise ArgumentError, "Triton.Runtime.CUDA.from_pointer/3 requires EXLA"
+    end
+
+    pointer = %Nx.Pointer{kind: :local, address: address, data_size: Nx.byte_size(template)}
+
+    Nx.from_pointer(EXLA.Backend, pointer, template.type, template.shape, opts)
+  end
+
+  defp exla_loaded? do
+    Code.ensure_loaded?(EXLA.Backend)
+  end
+
+  defp cuda_buffer?(data) do
+    buffer = Map.get(data, :buffer)
+
+    client_name =
+      case buffer do
+        %{client_name: client_name} -> client_name
+        _other -> nil
+      end
+
+    case client_name && apply(EXLA.Client, :fetch!, [client_name]) do
+      %{platform: :cuda} -> true
+      _other -> false
+    end
+  rescue
+    _error -> false
+  end
+
+  @doc """
   Loads a native plan into the CUDA driver, compiling and caching PTX and the
   device binary on the way when they are not already materialized.
 
@@ -102,6 +171,10 @@ defmodule Triton.Runtime.CUDA do
   @doc """
   Compiles (or loads from cache) and launches a native plan over its grid.
 
+  Returns `{:ok, results}` or `{:error, failure}` — this module is the
+  low-level driver API and reports failures as data; `launch!/3` raises
+  instead, and the high-level tensor-facing calls always raise.
+
   `args` follow the kernel ABI: binaries, flat lists, tensor-like maps, or Nx
   tensors for pointer/tensor arguments (uploaded to the device and copied back
   after the launch), integers/floats for scalar arguments, and
@@ -123,18 +196,32 @@ defmodule Triton.Runtime.CUDA do
   def launch(%{stage: :native_plan} = plan, args, opts) when is_list(args) do
     ensure_void_result!(plan)
 
-    {executable, opts} =
-      case Keyword.pop(opts, :executable) do
-        {%Executable{} = executable, opts} ->
-          {executable, opts}
+    case Keyword.pop(opts, :executable) do
+      {%Executable{} = executable, opts} ->
+        launch_loaded(plan, executable, args, opts)
 
-        {nil, opts} ->
-          case load(plan, opts) do
-            {:ok, %{executable: executable}} -> {executable, opts}
-            {:error, blocked} -> raise_blocked!(blocked)
-          end
-      end
+      {nil, opts} ->
+        case load(plan, opts) do
+          {:ok, %{executable: executable}} -> launch_loaded(plan, executable, args, opts)
+          {:error, blocked} -> {:error, blocked}
+        end
+    end
+  end
 
+  def launch(plan, _args, _opts) do
+    raise ArgumentError,
+          "expected Triton native plan, got #{inspect(if(is_map(plan), do: Map.get(plan, :stage), else: nil))}"
+  end
+
+  defp launch_loaded(plan, executable, args, opts) do
+    telemetry_metadata = %{entry: plan.entry, device: executable.device}
+
+    :telemetry.span([:triton, :launch], telemetry_metadata, fn ->
+      {do_launch_loaded(plan, executable, args, opts), telemetry_metadata}
+    end)
+  end
+
+  defp do_launch_loaded(plan, executable, args, opts) do
     device = executable.device
     grid = launch_grid!(plan, opts)
     metadata = executable.launch_metadata
@@ -190,9 +277,20 @@ defmodule Triton.Runtime.CUDA do
     end
   end
 
-  def launch(plan, _args, _opts) do
-    raise ArgumentError,
-          "expected Triton native plan, got #{inspect(if(is_map(plan), do: Map.get(plan, :stage), else: nil))}"
+  @doc """
+  Like `launch/3`, but raises on failure and returns the results directly.
+  """
+  def launch!(plan, args, opts \\ []) do
+    case launch(plan, args, opts) do
+      {:ok, results} -> results
+      {:error, failure} -> raise_failure!("launch", failure)
+    end
+  end
+
+  defp raise_failure!(action, failure) do
+    raise RuntimeError,
+          "Triton native #{action} failed (status: #{inspect(Map.get(failure, :status))}, " <>
+            "reason: #{inspect(Map.get(failure, :reason))}): #{inspect(failure)}"
   end
 
   @doc """
@@ -214,16 +312,18 @@ defmodule Triton.Runtime.CUDA do
       cost itself is measured separately and subtracted (default true)
 
   Returns `{:ok, %{avg_ms: ..., rounds_ms: [...], reps: ..., grid: ..., block: ...}}`.
+  See `bench!/3` for the raising variant.
   """
   def bench(%{stage: :native_plan} = plan, args, opts \\ []) do
     ensure_void_result!(plan)
 
-    {:ok, %{executable: executable}} =
-      case load(plan, Keyword.take(opts, [:device])) do
-        {:ok, loaded} -> {:ok, loaded}
-        {:error, blocked} -> raise_blocked!(blocked)
-      end
+    case load(plan, Keyword.take(opts, [:device])) do
+      {:ok, %{executable: executable}} -> bench_loaded(plan, executable, args, opts)
+      {:error, blocked} -> {:error, blocked}
+    end
+  end
 
+  defp bench_loaded(plan, executable, args, opts) do
     device = executable.device
     grid = launch_grid!(plan, opts)
     metadata = executable.launch_metadata
@@ -318,11 +418,23 @@ defmodule Triton.Runtime.CUDA do
     end
   end
 
+  @doc """
+  Like `bench/3`, but raises on failure and returns the stats directly.
+  """
+  def bench!(plan, args, opts \\ []) do
+    case bench(plan, args, opts) do
+      {:ok, stats} -> stats
+      {:error, failure} -> raise_failure!("bench", failure)
+    end
+  end
+
   ## Compilation / caching
 
+  @doc false
   # Produces the CUBIN and launch metadata for a plan, reusing cache artifacts
-  # when they match the plan's cache key.
-  defp device_binary(plan) do
+  # when they match the plan's cache key. Public for Triton.EXLA.CustomCall,
+  # which registers the CUBIN with the XLA FFI handler.
+  def device_binary(plan) do
     cubin_artifact = artifact!(plan, :artifact)
     metadata_path = launch_metadata_path(plan)
 
@@ -431,7 +543,10 @@ defmodule Triton.Runtime.CUDA do
   defp pad_grid({x, y}), do: {x, y, 1}
   defp pad_grid({x, y, z}), do: {x, y, z}
 
-  defp launch_block(plan, metadata) do
+  @doc false
+  # Launch block dims from a plan's metadata; the warp-size fallback policy
+  # is launch-ABI-critical, so Triton.EXLA.CustomCall shares it too.
+  def launch_block(plan, metadata) do
     num_warps =
       metadata.total_num_warps ||
         get_in(plan, [:tuning, :num_warps]) ||
@@ -585,14 +700,25 @@ defmodule Triton.Runtime.CUDA do
 
   defp encode_host_value(binary, _element_type, _expected) when is_binary(binary), do: binary
 
-  defp encode_host_value(%{__struct__: Nx.Tensor} = tensor, _element_type, _expected) do
+  defp encode_host_value(%Nx.Tensor{} = tensor, _element_type, _expected) do
     Nx.to_binary(tensor)
   end
 
   defp encode_host_value(value, element_type, expected) do
-    values = flat_values!(value, expected)
-    Enum.into(values, <<>>, &encode_number(&1, element_type))
+    case flat_values!(value, expected) do
+      [] -> <<>>
+      values -> values |> Enum.map(&pred_to_int/1) |> Nx.tensor(type: nx_type(element_type)) |> Nx.to_binary()
+    end
   end
+
+  # Nx carries all binary marshalling, including f16/bf16; predicates ride
+  # as u8 (Triton's i1 storage width).
+  defp nx_type({:pred, _width}), do: {:u, 8}
+  defp nx_type(type), do: type
+
+  defp pred_to_int(true), do: 1
+  defp pred_to_int(false), do: 0
+  defp pred_to_int(value), do: value
 
   defp flat_values!(list, _expected) when is_list(list), do: List.flatten(list)
 
@@ -617,18 +743,12 @@ defmodule Triton.Runtime.CUDA do
 
   defp decode_host_value(binary, _element_type, original) when is_binary(original), do: binary
 
-  defp decode_host_value(binary, _element_type, %{__struct__: Nx.Tensor} = tensor) do
-    if Code.ensure_loaded?(Nx) and function_exported?(Nx, :from_binary, 2) do
-      Nx
-      |> apply(:from_binary, [binary, tensor.type])
-      |> then(&apply(Nx, :reshape, [&1, tensor.shape]))
-    else
-      binary
-    end
+  defp decode_host_value(binary, _element_type, %Nx.Tensor{} = tensor) do
+    binary |> Nx.from_binary(tensor.type) |> Nx.reshape(tensor.shape)
   end
 
   defp decode_host_value(binary, element_type, original) do
-    values = decode_numbers(binary, element_type)
+    values = binary |> Nx.from_binary(nx_type(element_type)) |> Nx.to_flat_list()
 
     case original do
       %{} = tensor_like ->
@@ -661,89 +781,6 @@ defmodule Triton.Runtime.CUDA do
     end
   end
 
-  defp encode_number(value, {:f, 64}), do: <<value * 1.0::float-64-native>>
-  defp encode_number(value, {:f, 32}), do: <<value * 1.0::float-32-native>>
-  defp encode_number(value, {:f, 16}), do: encode_f16(value * 1.0)
-  defp encode_number(value, {:bf, 16}), do: encode_bf16(value * 1.0)
-  defp encode_number(value, {:s, width}), do: <<value::signed-integer-size(width)-native>>
-  defp encode_number(value, {:u, width}), do: <<value::unsigned-integer-size(width)-native>>
-
-  defp encode_number(value, {:pred, _width}),
-    do: <<if(value in [true, 1], do: 1, else: 0)::unsigned-integer-8>>
-
-  defp encode_number(value, type) do
-    raise ArgumentError, "cannot encode #{inspect(value)} as #{inspect(type)}"
-  end
-
-  defp decode_numbers(binary, {:f, 64}), do: for(<<value::float-64-native <- binary>>, do: value)
-  defp decode_numbers(binary, {:f, 32}), do: for(<<value::float-32-native <- binary>>, do: value)
-
-  defp decode_numbers(binary, {:f, 16}),
-    do: for(<<bits::unsigned-integer-16-native <- binary>>, do: decode_f16(bits))
-
-  defp decode_numbers(binary, {:bf, 16}),
-    do: for(<<bits::unsigned-integer-16-native <- binary>>, do: decode_bf16(bits))
-
-  defp decode_numbers(binary, {:s, width}),
-    do: for(<<value::signed-integer-size(width)-native <- binary>>, do: value)
-
-  defp decode_numbers(binary, {:u, width}),
-    do: for(<<value::unsigned-integer-size(width)-native <- binary>>, do: value)
-
-  defp decode_numbers(binary, {:pred, _width}),
-    do: for(<<value::unsigned-integer-8 <- binary>>, do: value != 0)
-
-  defp decode_numbers(_binary, type) do
-    raise ArgumentError, "cannot decode kernel results of type #{inspect(type)}"
-  end
-
-  defp encode_f16(value) do
-    <<sign::1, exponent::8, mantissa::23>> = <<value::float-32>>
-
-    half =
-      cond do
-        exponent == 255 and mantissa != 0 -> <<sign::1, 31::5, 512::10>>
-        exponent == 255 -> <<sign::1, 31::5, 0::10>>
-        exponent - 127 + 15 >= 31 -> <<sign::1, 31::5, 0::10>>
-        exponent - 127 + 15 <= 0 -> <<sign::1, 0::5, 0::10>>
-        true -> <<sign::1, exponent - 127 + 15::5, mantissa >>> 13::10>>
-      end
-
-    <<bits::unsigned-integer-16>> = half
-    <<bits::unsigned-integer-16-native>>
-  end
-
-  defp decode_f16(bits) do
-    <<sign::1, exponent::5, mantissa::10>> = <<bits::unsigned-integer-16>>
-
-    cond do
-      exponent == 31 and mantissa != 0 ->
-        :nan
-
-      exponent == 31 ->
-        if sign == 1, do: :neg_infinity, else: :infinity
-
-      exponent == 0 and mantissa == 0 ->
-        0.0 * if(sign == 1, do: -1.0, else: 1.0)
-
-      exponent == 0 ->
-        :math.pow(-1, sign) * :math.pow(2, -14) * (mantissa / 1024)
-
-      true ->
-        :math.pow(-1, sign) * :math.pow(2, exponent - 15) * (1 + mantissa / 1024)
-    end
-  end
-
-  defp encode_bf16(value) do
-    <<bits::unsigned-integer-32>> = <<value::float-32>>
-    <<bits >>> 16::unsigned-integer-16-native>>
-  end
-
-  defp decode_bf16(bits) do
-    <<value::float-32>> = <<bits::unsigned-integer-16, 0::unsigned-integer-16>>
-    value
-  end
-
   ## Results and errors
 
   defp launch_return(results, opts) do
@@ -762,11 +799,6 @@ defmodule Triton.Runtime.CUDA do
         raise ArgumentError,
               "kernel #{inspect(plan.entry)} returns #{inspect(other)}, but natively executed Triton kernels must be void; write results with store/2,3 through pointer arguments (the reference interpreter still supports value-returning kernels)"
     end
-  end
-
-  defp raise_blocked!(blocked) do
-    raise RuntimeError,
-          "Triton native execution is unavailable (reason: #{inspect(Map.get(blocked, :reason))}, blocked_by: #{inspect(Map.get(blocked, :blocked_by, []))})"
   end
 
   defp cuda_available? do

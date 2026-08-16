@@ -63,6 +63,9 @@ defmodule Triton.Kernel do
     )
   end
 
+  @doc false
+  # Execution lives on the Triton facade (Triton.run/3, Triton.launch/3);
+  # these remain callable for internal use.
   def run(kernel, args, opts \\ [])
 
   def run(%__MODULE__{backend: :native} = kernel, args, opts)
@@ -75,6 +78,7 @@ defmodule Triton.Kernel do
     Triton.Interpreter.run(kernel, args, opts)
   end
 
+  @doc false
   def launch(kernel, args, opts \\ [])
 
   def launch(%__MODULE__{backend: :native, compiled: %{stage: :native_plan} = plan}, args, opts)

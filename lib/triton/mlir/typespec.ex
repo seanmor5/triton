@@ -60,7 +60,7 @@ defmodule Triton.MLIR.Typespec do
 
   def from(nil), do: struct(__MODULE__, shape: nil, type: :void)
 
-  def from(%{__struct__: Nx.Tensor, shape: shape, type: type}) when is_tuple(shape) do
+  def from(%Nx.Tensor{shape: shape, type: type}) when is_tuple(shape) do
     tensor(type, shape)
   end
 

@@ -63,10 +63,24 @@ defmodule Triton.Autotuner do
 
     with true <- Keyword.get(opts, :cache, true),
          {:ok, cached} <- lookup_cache(cache_key) do
+      :telemetry.execute([:triton, :cache, :hit], %{}, %{cache: :autotune})
       {:ok, cached}
     else
       _miss ->
-        result = run_tuning(fun, specs, args, configs, grid, opts)
+        metadata = %{name: Keyword.get(opts, :name), configs: length(configs)}
+
+        result =
+          :telemetry.span([:triton, :autotune], metadata, fn ->
+            result = run_tuning(fun, specs, args, configs, grid, opts)
+
+            stop_metadata =
+              case result do
+                {:ok, best} -> Map.put(metadata, :best_config, best.config)
+                _other -> metadata
+              end
+
+            {result, stop_metadata}
+          end)
 
         with {:ok, best} <- result do
           store_cache(cache_key, best)

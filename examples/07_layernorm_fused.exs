@@ -21,7 +21,9 @@
 defmodule Ex07.Kernels do
   use Triton.Language
 
-  defkernel layernorm(x_ptr, w_ptr, b_ptr, out_ptr, n_cols, block \\ 1024, eps \\ 1.0e-5) do
+  defkernel layernorm(x_ptr, w_ptr, b_ptr, out_ptr, n_cols, block \\ 1024, eps \\ 1.0e-5),
+    out: [out_ptr: [like: :x_ptr]],
+    grid: fn %{x_ptr: x} -> {elem(Nx.shape(x), 0)} end do
     row = program_id(0)
     offs = arange(0, block)
     mask = offs < n_cols
@@ -48,11 +50,12 @@ defmodule Ex07.NxImpl do
 end
 
 defmodule Ex07.Run do
+  # The kernel declares out:/grid:; only the block/warp tuning stays at the
+  # call site because it depends on the row width.
   def triton_layernorm(x, w, b) do
-    {rows, cols} = Nx.shape(x)
+    {_rows, cols} = Nx.shape(x)
 
-    Ex07.Kernels.layernorm(x, w, b, Nx.template(Nx.shape(x), Nx.type(x)), cols,
-      grid: {rows},
+    Ex07.Kernels.layernorm(x, w, b, cols,
       block: cols,
       num_warps: if(cols >= 2048, do: 8, else: 4)
     )

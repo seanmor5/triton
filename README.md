@@ -38,7 +38,7 @@ defmodule MyKernels do
   end
 end
 
-specs = [Triton.ptr(:float32), Triton.ptr(:float32), Triton.scalar_spec({:s, 32})]
+specs = [Triton.ptr(:f32), Triton.ptr(:f32), Triton.scalar_spec(:s32)]
 
 # Reference interpreter — runs anywhere:
 kernel = MyKernels.softmax(specs, constants: [block: 128])
@@ -46,7 +46,7 @@ Triton.launch(kernel, [x, out, 100], grid: {rows, 1, 1}, return: {:arg, 1})
 
 # Native CUDA — same kernel, real Triton compiler:
 kernel = MyKernels.softmax(specs, constants: [block: 128], backend: :native)
-{:ok, out} = Triton.Runtime.CUDA.launch(kernel.compiled, [x, out, 100],
+out = Triton.Runtime.CUDA.launch!(kernel.compiled, [x, out, 100],
   grid: {rows, 1, 1}, return: {:arg, 1})
 ```
 
@@ -133,46 +133,48 @@ cached per tuning key in persistent terms.
 
 ### Nx and EXLA integration
 
-Every `defkernel` is directly callable with Nx tensors. Pass an
-`Nx.template` where the kernel expects an output pointer — the template's
-position marks the output, its shape/type describe the allocation, and the
-call returns the filled tensor. Loose keyword-tail keys set compile-time
-constants:
+Every `defkernel` is directly callable with Nx tensors. Kernels declare
+their outputs and launch grid at the definition, so call sites pass only
+the inputs — the call allocates the outputs and returns them:
 
 ```elixir
+defkernel softmax(x_ptr, out_ptr, n_cols, block \\ 1024),
+  out: [out_ptr: [like: :x_ptr]],
+  grid: fn %{x_ptr: x} -> {elem(Nx.shape(x), 0)} end do
+  ...
+end
+
 x = Nx.iota({8, 1000}, type: :f32)
-out = MyKernels.softmax(x, Nx.template(Nx.shape(x), :f32), 1000,
-        grid: {8}, block: 1024)
+out = MyKernels.softmax(x, 1000)
 ```
 
-Compilation is cached per argument-spec/constants, and EXLA CUDA tensors pass
-in **zero-copy** as raw device pointers — outputs are allocated on the same
-device, so the data never leaves the GPU:
+Loose keyword-tail keys set compile-time constants
+(`MyKernels.softmax(x, 1000, block: 2048)`); compilation is cached per
+argument-spec/constants; and EXLA CUDA tensors pass in **zero-copy** as raw
+device pointers — outputs are allocated on the same device, so the data
+never leaves the GPU:
 
 ```elixir
 Nx.default_backend({EXLA.Backend, client: :cuda})
-x = Nx.iota({2000}, type: :f32)                    # lives on the GPU
-out = MyKernels.softmax(x, Nx.template({2000}, :f32), 2000, grid: {2})
-# out is an EXLA.Backend tensor backed by a device buffer
+x = Nx.iota({2000}, type: :f32)          # lives on the GPU
+out = MyKernels.softmax(x, 2000)         # EXLA tensor backed by a device buffer
 ```
 
-The same calls work inside `Nx.Defn` — wrap the launch in a `deftransform`
-so concrete shapes are available for the grid:
+The same call works directly inside `Nx.Defn` — declarations resolve at
+trace time, when shapes are concrete:
 
 ```elixir
-defn model(x), do: x |> softmax() |> Nx.sum()
-
-deftransform softmax(x) do
-  {rows, cols} = Nx.shape(x)
-  MyKernels.softmax(x, Nx.template(Nx.shape(x), Nx.type(x)), cols,
-    grid: {rows}, block: 1024)
-end
+defn model(x), do: x |> MyKernels.softmax(1000) |> Nx.sum()
 ```
 
-Under the default evaluator the kernel launches natively on the GPU.
-(Lowering through a fully `EXLA.jit`-compiled graph currently falls back to
-`Nx.runtime_call`, which hits a bug in EXLA 0.13.1's CUDA runtime-callback
-lowering — the planned XLA FFI custom-call handler will replace that path.)
+Under a fully `EXLA.jit`-compiled graph the kernel is spliced into the XLA
+program as a real `stablehlo.custom_call`: a small plugin
+(`priv/triton_exla_ffi.so`, built automatically when EXLA is present)
+registers an XLA FFI handler that launches the compiled CUBIN directly on
+XLA's CUDA stream — one compiled executable, no BEAM round-trips, no
+per-call allocation. The result is bitwise identical to the eager launch of
+the same kernel, and an entire Axon model with a Triton attention layer
+compiles into a single XLA program (`examples/09_axon_triton_layer.exs`).
 
 ### GPU kernels under OTP
 
@@ -209,11 +211,12 @@ PyTorch/cuBLAS (full tables in [bench/RESULTS.md](bench/RESULTS.md)):
 Reproduce with `mix run bench/kernel_bench.exs` and
 `python3 bench/python_baselines.py`.
 
-`bench/nx_vs_triton_bench.exs` races Nx/EXLA (XLA on GPU) against the
-tensor-facing Triton calls end-to-end. XLA wins the ops it already fuses
-well (elementwise, row reductions, cuBLAS matmul); Triton wins where the
-algorithm changes — flash attention is 1.5x faster than XLA's materialized
-attention at seq=8192 and 2.1x at seq=16384 (full analysis in
+`bench/nx_vs_triton_bench.exs` races Nx/EXLA (XLA on GPU) against Triton
+end-to-end, both eagerly and with the kernel compiled into the XLA program
+as a custom call. Eagerly, XLA wins the ops it already fuses well; inside
+`EXLA.jit` the boundary tax disappears — Triton softmax runs at parity with
+XLA's, and flash attention beats XLA's materialized attention 2.0x at
+seq=8192 and 2.3x at seq=16384 (full analysis in
 [bench/RESULTS.md](bench/RESULTS.md)).
 
 ## How it works

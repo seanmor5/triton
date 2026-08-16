@@ -100,8 +100,8 @@ end
 defmodule Ex05.Run do
   alias Ex05.KernelServer
 
-  @f32 Triton.ptr(:float32)
-  @i32 Triton.scalar_spec({:s, 32})
+  @f32 Triton.ptr(:f32)
+  @i32 Triton.scalar_spec(:s32)
   @specs [@f32, @f32, @i32]
 
   @rows 2048

@@ -6,16 +6,12 @@
 #
 #   * vanilla — one Axon model, attention spelled in Nx (materializes the
 #     seq x seq score matrix), the whole graph compiled by EXLA/XLA.
-#   * triton  — the same Axon graph split at the attention seam: the front
-#     segment (norm + Q/K/V) and back segment (out projection + MLP) are
-#     EXLA-compiled Axon models, and flash attention runs between them as a
-#     tensor-facing Triton call. EXLA tensors cross the seam zero-copy.
-#
-# The split is the honest state of the art today: a Triton block cannot yet
-# live *inside* an EXLA-compiled graph (EXLA 0.13.1's runtime-callback
-# lowering is broken upstream; the planned XLA custom-call handler will make
-# this a single graph). Staging costs two extra dispatch boundaries — and
-# flash attention still wins once sequences get long.
+#   * triton  — the same Axon graph with the attention layer swapped for the
+#     flash attention kernel. The tensor-facing call inside the custom layer
+#     lowers to a `stablehlo.custom_call`, and the Triton XLA FFI handler
+#     (priv/triton_exla_ffi.so) launches the compiled CUBIN directly on XLA's
+#     CUDA stream — ONE compiled graph, no BEAM round-trip, no extra
+#     dispatch boundaries.
 #
 # Run with:
 #
@@ -25,7 +21,9 @@
 defmodule Ex09.Kernels do
   use Triton.Language
 
-  defkernel attention(q_ptr, k_ptr, v_ptr, o_ptr, seq_len, scale, bm \\ 64, bn \\ 64, d \\ 64) do
+  defkernel attention(q_ptr, k_ptr, v_ptr, o_ptr, seq_len, scale, bm \\ 64, bn \\ 64, d \\ 64),
+    out: [o_ptr: [like: :q_ptr]],
+    grid: fn %{q_ptr: q, bm: bm} -> {Triton.cdiv(elem(Nx.shape(q), 1), bm)} end do
     offs_m = program_id(0) * bm + arange(0, bm)
     offs_d = arange(0, d)
     q = load(q_ptr + expand_dims(offs_m, 1) * d + expand_dims(offs_d, 0))
@@ -58,17 +56,12 @@ defmodule Ex09.Model do
 
   # Batch is 1 and the buffers are contiguous, so a {1, seq, d} tensor and a
   # {seq, d} tensor are the same bytes: the kernel takes the Q/K/V tensors
-  # as-is, no reshapes at the seam.
+  # as-is, no reshapes at the seam (the declared grid reads the seq axis).
   def flash_attention(q, k, v) do
     {1, seq, @d} = Nx.shape(q)
     scale = 1.0 / :math.sqrt(@d)
 
-    Ex09.Kernels.attention(q, k, v, Nx.template({1, seq, @d}, :f32), seq, scale,
-      grid: {div(seq, @block)},
-      bm: @block,
-      bn: @block,
-      d: @d
-    )
+    Ex09.Kernels.attention(q, k, v, seq, scale, bm: @block, bn: @block, d: @d)
   end
 
   # Nx spelling of the same attention: materializes softmax(scale * Q K^T).
@@ -114,18 +107,18 @@ defmodule Ex09.Model do
     back(o, residual)
   end
 
-  # The same layers (same names, same shapes -> same weights) split into two
-  # EXLA-compiled models around the Triton call.
-  def front_model do
+  # The same graph (same layer names, same shapes -> same weights) with the
+  # attention layer implemented by the Triton kernel. The layer function runs
+  # at trace time, so the tensor-facing call records an Nx.block that EXLA
+  # lowers to a custom call inside the compiled program.
+  def triton do
     input = Axon.input("x", shape: {nil, nil, @d})
-    Axon.container(front(input))
-  end
-
-  def back_model do
-    o = Axon.input("o", shape: {nil, nil, @d})
-    residual = Axon.input("residual", shape: {nil, nil, @d})
+    {q, k, v, residual} = front(input)
+    o = Axon.layer(&flash_layer/4, [q, k, v], name: "attention", op_name: :flash_attention)
     back(o, residual)
   end
+
+  defp flash_layer(q, k, v, _opts), do: flash_attention(q, k, v)
 end
 
 defmodule Ex09.Run do
@@ -144,18 +137,11 @@ defmodule Ex09.Run do
     template = Nx.template({1, 1024, @d}, :f32)
 
     {vanilla_init, vanilla_predict} = Axon.build(Ex09.Model.vanilla(), compiler: EXLA)
-    {_front_init, front_predict} = Axon.build(Ex09.Model.front_model(), compiler: EXLA)
-    {_back_init, back_predict} = Axon.build(Ex09.Model.back_model(), compiler: EXLA)
+    {_triton_init, triton_predict} = Axon.build(Ex09.Model.triton(), compiler: EXLA)
 
-    # One set of weights drives both variants: layer names match, so the
-    # split models select their slices of the same ModelState.
+    # One set of weights drives both variants: the graphs share layer names
+    # and shapes, so a single ModelState feeds both compiled models.
     params = vanilla_init.(%{"x" => template}, Axon.ModelState.empty())
-
-    triton_predict = fn params, %{"x" => x} ->
-      {q, k, v, residual} = front_predict.(params, %{"x" => x})
-      o = Ex09.Model.flash_attention(q, k, v)
-      back_predict.(params, %{"o" => o, "residual" => residual})
-    end
 
     IO.puts("== 1. Correctness (seq=1024) " <> String.duplicate("=", 38))
 
@@ -169,7 +155,8 @@ defmodule Ex09.Run do
       Nx.subtract(out_vanilla, out_triton) |> Nx.abs() |> Nx.reduce_max() |> Nx.to_number()
 
     IO.puts("  transformer block, single head, d=#{@d}, same weights through both paths")
-    IO.puts("  max |diff| vanilla XLA vs Triton-staged = #{diff}")
+    IO.puts("  Triton variant: flash attention as a stablehlo.custom_call in ONE graph")
+    IO.puts("  max |diff| vanilla XLA vs Triton layer = #{diff}")
     unless diff < 5.0e-2, do: raise("model outputs diverge!")
     IO.puts("  OK (tolerance 5e-2: flash attention dot() uses tf32 tensor cores)\n")
 
@@ -194,9 +181,9 @@ defmodule Ex09.Run do
     end
 
     IO.puts("")
-    IO.puts("  The Triton path pays two extra dispatch boundaries at the attention")
-    IO.puts("  seam; flash attention pays them back with O(seq) instead of O(seq^2)")
-    IO.puts("  memory traffic.")
+    IO.puts("  Both variants are single EXLA-compiled graphs; the Triton one embeds")
+    IO.puts("  the kernel as an XLA custom call, trading the O(seq^2) score matrix")
+    IO.puts("  for flash attention's O(seq) memory traffic.")
     IO.puts("\nDone.")
   end
 end

@@ -57,9 +57,9 @@ end
 defmodule Ex04.Run do
   alias Triton.Runtime.CUDA
 
-  @f32 Triton.ptr(:float32)
-  @i32 Triton.scalar_spec({:s, 32})
-  @f32s Triton.scalar_spec({:f, 32})
+  @f32 Triton.ptr(:f32)
+  @i32 Triton.scalar_spec(:s32)
+  @f32s Triton.scalar_spec(:f32)
   @specs [@f32, @f32, @f32, @f32, @i32, @f32s]
 
   @d 64
@@ -113,8 +113,8 @@ defmodule Ex04.Run do
     v = random_f32_bin(seq * @d)
     o = :binary.copy(<<0::size(seq * @d * 32)>>)
 
-    {:ok, o_bin} =
-      CUDA.launch(kernel.compiled, [q, k, v, o, seq, scale],
+    o_bin =
+      CUDA.launch!(kernel.compiled, [q, k, v, o, seq, scale],
         grid: {div(seq, @block), 1, 1},
         return: {:arg, 3}
       )
@@ -141,8 +141,8 @@ defmodule Ex04.Run do
     v = random_f32_bin(seq * @d)
     o = :binary.copy(<<0::size(seq * @d * 32)>>)
 
-    {:ok, stats} =
-      CUDA.bench(kernel.compiled, [q, k, v, o, seq, scale],
+    stats =
+      CUDA.bench!(kernel.compiled, [q, k, v, o, seq, scale],
         grid: {div(seq, @block), 1, 1},
         warmup: 10,
         reps: 50

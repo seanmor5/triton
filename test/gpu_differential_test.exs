@@ -90,6 +90,60 @@ defmodule Triton.GPUDifferentialTest.Kernels do
     x = load(x_ptr + offs, mask: mask, other: 1.0e30)
     store(out_ptr, min(x, axis: 0))
   end
+
+  defkernel scale(x_ptr, out_ptr, factor, n, block \\ 256) do
+    offs = program_id(0) * block + arange(0, block)
+    mask = offs < n
+    store(out_ptr + offs, load(x_ptr + offs, mask: mask, other: 0.0) * factor, mask: mask)
+  end
+
+  defkernel declared_softmax(x_ptr, out_ptr, n_cols, block \\ 128),
+    out: [out_ptr: [like: :x_ptr]],
+    grid: fn %{x_ptr: x} -> {elem(Nx.shape(x), 0)} end do
+    row = program_id(0)
+    offs = arange(0, block)
+    mask = offs < n_cols
+    x = load(x_ptr + row * n_cols + offs, mask: mask, other: -1.0e30)
+    e = exp(x - max(x, axis: 0))
+    store(out_ptr + row * n_cols + offs, e / sum(e, axis: 0), mask: mask)
+  end
+end
+
+defmodule Triton.GPUDifferentialTest.JitPipelines do
+  @moduledoc false
+  # Kernel calls under full `EXLA.jit`: each tensor-facing call lowers to a
+  # `stablehlo.custom_call` handled by the Triton XLA FFI plugin, launching
+  # the compiled CUBIN on XLA's stream inside the compiled program.
+  import Nx.Defn
+
+  alias Triton.GPUDifferentialTest.Kernels
+
+  defn add_and_sum(x, y) do
+    added(x, y) |> Nx.sum()
+  end
+
+  deftransform added(x, y) do
+    {n} = Nx.shape(x)
+    Kernels.add(x, y, Nx.template({n}, :f32), n, grid: {div(n + 255, 256)}, block: 256)
+  end
+
+  deftransform softmax(x) do
+    {rows, cols} = Nx.shape(x)
+
+    Kernels.softmax(x, Nx.template(Nx.shape(x), Nx.type(x)), cols,
+      grid: {rows},
+      block: 128
+    )
+  end
+
+  defn scaled_sum(x, factor) do
+    scaled(x, factor) |> Nx.sum()
+  end
+
+  deftransform scaled(x, factor) do
+    {n} = Nx.shape(x)
+    Kernels.scale(x, Nx.template({n}, :f32), factor, n, grid: {div(n + 255, 256)})
+  end
 end
 
 defmodule Triton.GPUDifferentialTest do
@@ -128,8 +182,8 @@ defmodule Triton.GPUDifferentialTest do
     alias Triton.GPUDifferentialTest.Kernels
     alias Triton.Language, as: Tl
 
-    @f32 Triton.ptr(:float32)
-    @i32 Triton.scalar_spec({:s, 32})
+    @f32 Triton.ptr(:f32)
+    @i32 Triton.scalar_spec(:s32)
 
     @add_blocks [64, 128, 256, 1024]
     @softmax_blocks [64, 128, 256]
@@ -325,6 +379,71 @@ defmodule Triton.GPUDifferentialTest do
       end
     end
 
+    # -- XLA custom calls ----------------------------------------------------
+
+    describe "XLA custom calls (EXLA.jit)" do
+      alias Triton.GPUDifferentialTest.JitPipelines
+
+      test "jitted tensor calls match the eager launch of the same kernel" do
+        x = Nx.multiply(Nx.iota({8, 128}, type: :f32, backend: EXLA.Backend), 0.01)
+
+        jitted = EXLA.jit(&JitPipelines.softmax/1).(x)
+        eager = JitPipelines.softmax(x)
+
+        # Same CUBIN, same launch configuration: results are identical.
+        assert Nx.to_flat_list(jitted) == Nx.to_flat_list(eager)
+      end
+
+      test "kernels compose with XLA ops inside one compiled graph" do
+        n = 1000
+        x = Nx.iota({n}, type: :f32, backend: EXLA.Backend)
+        y = Nx.multiply(x, 2.0)
+
+        got = EXLA.jit(&JitPipelines.add_and_sum/2).(x, y) |> Nx.to_number()
+        expected = Nx.add(x, y) |> Nx.sum() |> Nx.to_number()
+
+        assert_in_delta got, expected, abs(expected) * 1.0e-6 + 1.0e-6
+      end
+
+      test "dynamic scalar arguments are read back at launch" do
+        n = 500
+        x = Nx.iota({n}, type: :f32, backend: EXLA.Backend)
+        factor = Nx.tensor(3.0, type: :f32, backend: EXLA.Backend)
+
+        got = EXLA.jit(&JitPipelines.scaled_sum/2).(x, factor) |> Nx.to_number()
+        expected = Nx.multiply(x, 3.0) |> Nx.sum() |> Nx.to_number()
+
+        assert_in_delta got, expected, abs(expected) * 1.0e-6 + 1.0e-6
+      end
+
+      test "declared kernels (out:/grid:) run natively and inside EXLA.jit" do
+        x = Nx.multiply(Nx.iota({8, 128}, type: :f32, backend: EXLA.Backend), 0.01)
+
+        eager = Kernels.declared_softmax(x, 128)
+        jitted = EXLA.jit(fn t -> Kernels.declared_softmax(t, 128) end).(x)
+
+        # Same CUBIN, same declared launch configuration: identical results.
+        assert Nx.to_flat_list(eager) == Nx.to_flat_list(jitted)
+
+        row_sums = eager |> Nx.sum(axes: [1]) |> Nx.to_flat_list()
+        for row_sum <- row_sums, do: assert_in_delta(row_sum, 1.0, 1.0e-5)
+      end
+
+      test "un-jitted defn with EXLA tensors goes through the custom call" do
+        # The evaluator delegates the block to EXLA.Backend.block, which jits
+        # a wrapper around it — a path that crashed in EXLA's
+        # runtime-callback lowering before the FFI handler existed.
+        n = 1000
+        x = Nx.iota({n}, type: :f32, backend: EXLA.Backend)
+        y = Nx.multiply(x, 2.0)
+
+        got = JitPipelines.add_and_sum(x, y) |> Nx.to_number()
+        expected = Nx.add(x, y) |> Nx.sum() |> Nx.to_number()
+
+        assert_in_delta got, expected, abs(expected) * 1.0e-6 + 1.0e-6
+      end
+    end
+
     # -- tensor-facing calls -------------------------------------------------
 
     describe "tensor-facing defkernel calls" do
@@ -336,7 +455,7 @@ defmodule Triton.GPUDifferentialTest do
 
         out = Kernels.add(x, y, Nx.template({n}, :f32), n, grid: {cdiv(n, block)}, block: block)
 
-        assert Triton.Nx.cuda_backed?(out)
+        assert Triton.Runtime.CUDA.device_backed?(out)
         assert Nx.to_flat_list(out) == Nx.to_flat_list(Nx.add(x, y))
       end
 

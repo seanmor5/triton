@@ -28,9 +28,42 @@ JOBS ?= $(shell if command -v nproc >/dev/null 2>&1; then nproc; elif command -v
 GIT := git
 CMAKE := cmake
 
-.PHONY: all check-config fetch fetch-llvm build install clean deep-clean
+# Optional XLA FFI plugin (Triton kernels as custom calls inside
+# EXLA-compiled programs): builds when EXLA's extracted xla_extension is
+# available. Override EXLA_DIR when exla lives elsewhere.
+EXLA_DIR ?= $(firstword $(wildcard deps/exla ../exla))
+XLA_EXT_DIR := $(EXLA_DIR)/cache/xla_extension
+EXLA_FFI_SO := $(PRIV_DIR)/triton_exla_ffi.so
 
-all: install
+.PHONY: all check-config fetch fetch-llvm build install clean deep-clean exla-ffi
+
+# The full native build (NIF via cmake) is skipped when TRITON_SKIP_NATIVE is
+# set or cmake is unavailable; the lightweight optional targets (exla-ffi,
+# which self-skips without a C++ compiler or EXLA's xla_extension) still run.
+all:
+	@if [ "$(TRITON_SKIP_NATIVE)" = "1" ] || [ "$(TRITON_SKIP_NATIVE)" = "true" ] || \
+			! command -v $(CMAKE) >/dev/null 2>&1; then \
+		$(MAKE) exla-ffi; \
+	else \
+		$(MAKE) install; \
+	fi
+
+exla-ffi:
+	@if [ -n "$(EXLA_DIR)" ] && [ -d "$(XLA_EXT_DIR)/include/xla/ffi" ] && \
+			command -v $(CXX) >/dev/null 2>&1; then \
+		if [ ! -f "$(EXLA_FFI_SO)" ] || \
+				[ c_src/triton_exla_ffi.cc -nt "$(EXLA_FFI_SO)" ]; then \
+			mkdir -p $(PRIV_DIR); \
+			echo "Building triton_exla_ffi.so (XLA custom-call handler)..."; \
+			$(CXX) -O2 -fPIC -shared -std=c++17 -DNDEBUG -w -fvisibility=hidden \
+				-I$(ERTS_INCLUDE_DIR) -I$(XLA_EXT_DIR)/include \
+				c_src/triton_exla_ffi.cc -o $(EXLA_FFI_SO) \
+				-L$(XLA_EXT_DIR)/lib -lxla_extension \
+				-Wl,-rpath,$(abspath $(XLA_EXT_DIR))/lib -ldl; \
+		fi \
+	else \
+		echo "Skipping triton_exla_ffi.so (no EXLA xla_extension or C++ compiler)."; \
+	fi
 
 fetch-llvm:
 	@if [ ! -d "$(LLVM_PREBUILT_DIR)/lib/cmake/llvm" ]; then \
@@ -101,6 +134,7 @@ install: build
 	@echo "Installing Triton library..."
 	@mkdir -p $(PRIV_DIR)
 	@ln -sf $(BUILD_DIR)/libtriton.so $(PRIV_DIR)/$(NIF_NAME)$(NIF_SUFFIX)
+	@$(MAKE) exla-ffi
 
 clean:
 	@echo "Cleaning build artifacts..."

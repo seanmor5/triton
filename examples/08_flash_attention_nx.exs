@@ -21,7 +21,9 @@
 defmodule Ex08.Kernels do
   use Triton.Language
 
-  defkernel attention(q_ptr, k_ptr, v_ptr, o_ptr, seq_len, scale, bm \\ 64, bn \\ 64, d \\ 64) do
+  defkernel attention(q_ptr, k_ptr, v_ptr, o_ptr, seq_len, scale, bm \\ 64, bn \\ 64, d \\ 64),
+    out: [o_ptr: [like: :q_ptr]],
+    grid: fn %{q_ptr: q, bm: bm} -> {Triton.cdiv(elem(Nx.shape(q), 0), bm)} end do
     offs_m = program_id(0) * bm + arange(0, bm)
     offs_d = arange(0, d)
     q = load(q_ptr + expand_dims(offs_m, 1) * d + expand_dims(offs_d, 0))
@@ -58,12 +60,7 @@ defmodule Ex08.Attention do
     {seq, @d} = Nx.shape(q)
     scale = 1.0 / :math.sqrt(@d)
 
-    Ex08.Kernels.attention(q, k, v, Nx.template({seq, @d}, :f32), seq, scale,
-      grid: {div(seq, @block)},
-      bm: @block,
-      bn: @block,
-      d: @d
-    )
+    Ex08.Kernels.attention(q, k, v, seq, scale, bm: @block, bn: @block, d: @d)
   end
 
   # Standard attention: materializes softmax(scale * Q K^T) fully.

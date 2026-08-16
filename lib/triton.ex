@@ -6,6 +6,32 @@ defmodule Triton do
   kernels can be developed and tested without accelerator hardware. Tensor-like
   maps use the shape/type/value convention `%{shape: shape, type: type,
   values: flat_values}` and can be passed back into later kernels.
+
+  ## Telemetry
+
+  The library emits the following `:telemetry` events:
+
+    * `[:triton, :compile, :start | :stop | :exception]` — span around every
+      kernel compilation (`jit/3` and the tensor-call caches on miss).
+      Metadata: `:backend`, `:name`.
+
+    * `[:triton, :launch, :start | :stop | :exception]` — span around native
+      CUDA launches driven from the BEAM. Metadata: `:entry`, `:device`.
+      Launches embedded in EXLA-compiled programs as custom calls execute
+      inside the XLA runtime and are intentionally not instrumented
+      per-launch; account for them at the compile boundary via
+      `[:triton, :custom_call, :register]`.
+
+    * `[:triton, :cache, :hit | :miss]` — kernel-compilation cache lookups.
+      Metadata: `:cache` (`:kernel`, `:custom_call`, or `:autotune`).
+
+    * `[:triton, :custom_call, :register]` — a compiled CUBIN was registered
+      with the XLA FFI handler. Measurements: `:cubin_bytes`. Metadata:
+      `:kernel`, `:id`.
+
+    * `[:triton, :autotune, :start | :stop | :exception]` — span around an
+      autotuning run. Metadata: `:name`, `:configs`, and on stop
+      `:best_config`.
   """
 
   alias Triton.Compiler
@@ -39,10 +65,11 @@ defmodule Triton do
     complex128: {:c, 128}
   ]
 
+  # Dtype constructor functions (`Triton.f32()` etc.) predate the Nx-style
+  # type atoms; spec constructors accept `:f32`/`{:f, 32}` directly, so
+  # these stay callable for compatibility but out of the documented surface.
   for {name, dtype} <- @dtype_aliases do
-    @doc """
-    Returns the Triton dtype tuple for `#{name}`.
-    """
+    @doc false
     def unquote(name)(), do: unquote(Macro.escape(dtype))
   end
 
@@ -58,7 +85,7 @@ defmodule Triton do
 
       iex> require Triton
       iex> fun = Triton.kernel(fn x -> where(x > 0, x + 1, maximum(x, 0)) end)
-      iex> kernel = Triton.jit(fun, [Triton.tensor_spec(:int32, {4})])
+      iex> kernel = Triton.jit(fun, [Triton.tensor_spec(:s32, {4})])
       iex> Triton.run(kernel, [[-1, 1, 2, 3]])
       [0, 2, 3, 4]
 
@@ -73,64 +100,59 @@ defmodule Triton do
     raise ArgumentError, "kernel expects an anonymous fn, got: #{Macro.to_string(ast)}"
   end
 
-  @doc """
-  Returns true when a value was created by `Triton.kernel/1` or
-  `Triton.Language.kernel/1`.
-  """
+  @doc false
   def kernel_function?(%KernelFunction{}), do: true
+  @doc false
   def kernel_function?(_value), do: false
 
-  @doc """
-  Returns the anonymous function wrapped by `Triton.kernel/1`.
-  """
+  @doc false
   def kernel_function_fun(%KernelFunction{fun: fun}), do: fun
 
+  @doc false
   def kernel_function_fun(value) do
     raise ArgumentError, "expected a Triton kernel function wrapper, got #{inspect(value)}"
   end
 
-  @doc """
-  Returns the argument names captured by `Triton.kernel/1`.
-  """
+  @doc false
   def kernel_function_arg_names(%KernelFunction{arg_names: arg_names}), do: arg_names
 
+  @doc false
   def kernel_function_arg_names(value) do
     raise ArgumentError, "expected a Triton kernel function wrapper, got #{inspect(value)}"
   end
 
-  @doc """
-  Returns the arity captured by `Triton.kernel/1`.
-  """
+  @doc false
   def kernel_function_arity(%KernelFunction{arg_names: arg_names}), do: length(arg_names)
 
+  @doc false
   def kernel_function_arity(value) do
     raise ArgumentError, "expected a Triton kernel function wrapper, got #{inspect(value)}"
   end
 
-  @doc """
-  Returns true when a value is an autotune or heuristics wrapper.
-  """
+  @doc false
   def wrapper?(%{kind: :autotune, fun: %KernelFunction{}, configs: configs, opts: opts})
       when is_list(configs) and is_list(opts),
       do: true
 
+  @doc false
   def wrapper?(%{kind: :autotune, fun: fun, configs: configs, opts: opts})
       when is_function(fun) and is_list(configs) and is_list(opts),
       do: true
 
+  @doc false
   def wrapper?(%{kind: :heuristics, fun: %KernelFunction{}, heuristics: heuristics, opts: opts})
       when is_map(heuristics) and is_list(opts),
       do: true
 
+  @doc false
   def wrapper?(%{kind: :heuristics, fun: fun, heuristics: heuristics, opts: opts})
       when is_function(fun) and is_map(heuristics) and is_list(opts),
       do: true
 
+  @doc false
   def wrapper?(_value), do: false
 
-  @doc """
-  Returns a wrapper's kind, either `:autotune` or `:heuristics`.
-  """
+  @doc false
   def wrapper_kind(%{} = wrapper) do
     if wrapper?(wrapper) do
       Map.fetch!(wrapper, :kind)
@@ -139,11 +161,10 @@ defmodule Triton do
     end
   end
 
+  @doc false
   def wrapper_kind(value), do: wrapper_error!(value)
 
-  @doc """
-  Returns the function or direct-kernel wrapper stored by an autotune or heuristics wrapper.
-  """
+  @doc false
   def wrapper_fun(%{} = wrapper) do
     if wrapper?(wrapper) do
       Map.fetch!(wrapper, :fun)
@@ -152,11 +173,10 @@ defmodule Triton do
     end
   end
 
+  @doc false
   def wrapper_fun(value), do: wrapper_error!(value)
 
-  @doc """
-  Returns the default options stored by an autotune or heuristics wrapper.
-  """
+  @doc false
   def wrapper_opts(%{} = wrapper) do
     if wrapper?(wrapper) do
       Map.fetch!(wrapper, :opts)
@@ -165,11 +185,10 @@ defmodule Triton do
     end
   end
 
+  @doc false
   def wrapper_opts(value), do: wrapper_error!(value)
 
-  @doc """
-  Returns the config list stored by an autotune wrapper.
-  """
+  @doc false
   def autotune_configs(%{kind: :autotune} = wrapper) do
     if wrapper?(wrapper) do
       Map.fetch!(wrapper, :configs)
@@ -178,11 +197,10 @@ defmodule Triton do
     end
   end
 
+  @doc false
   def autotune_configs(value), do: autotune_wrapper_error!(value)
 
-  @doc """
-  Returns the heuristic map stored by a heuristics wrapper.
-  """
+  @doc false
   def wrapper_heuristics(%{kind: :heuristics} = wrapper) do
     if wrapper?(wrapper) do
       Map.fetch!(wrapper, :heuristics)
@@ -191,6 +209,7 @@ defmodule Triton do
     end
   end
 
+  @doc false
   def wrapper_heuristics(value), do: heuristics_wrapper_error!(value)
 
   defp wrapper_error!(value) do
@@ -209,7 +228,7 @@ defmodule Triton do
   Builds a tensor-like map from Elixir values.
 
   Values may be scalars, flat lists, nested rectangular lists, existing
-  tensor-like maps, or Nx tensors when Nx is available. `:shape` and `:type`
+  tensor-like maps, or Nx tensors. `:shape` and `:type`
   or `:dtype` may be supplied to override inferred metadata.
 
   ## Examples
@@ -251,78 +270,54 @@ defmodule Triton do
   """
   def from_nx(value, opts \\ []), do: tensor(value, opts)
 
-  @doc """
-  Returns true when a value is already a tensor-like runtime value.
-
-  This accepts Nx tensors, maps with `:shape` plus `:values`, `:data`, or
-  `:value`, and structured tuple/list results composed of those values. `nil`
-  is accepted only as a void leaf inside a structured result that also contains
-  at least one tensor-like value. Plain Elixir scalars and lists are tensorizable
-  with `tensor/2`, but are not considered tensor-like because they do not carry
-  shape metadata.
-  """
+  @doc false
   def tensor_like?(value), do: tensor_like_state(value) == :tensor_like
 
-  @doc """
-  Returns the normalized shape for a tensor-like value or compile-time spec.
-
-  Tuples and lists of tensor-like maps are handled recursively, matching the
-  shape of tuple-returning kernels and launches.
-  """
+  @doc false
   def shape(%Typespec{type: :tuple, shape: children}) when is_list(children),
     do: Enum.map(children, &shape/1)
 
+  @doc false
   def shape(%Typespec{shape: shape}), do: shape
+  @doc false
   def shape(value), do: tensor_metadata(value, :shape)
 
-  @doc """
-  Returns the tensor rank for a tensor-like value or compile-time spec.
-
-  Structured tuple/list results are handled recursively.
-  """
+  @doc false
   def rank(%Typespec{type: :tuple, shape: children}) when is_list(children),
     do: Enum.map(children, &rank/1)
 
+  @doc false
   def rank(%Typespec{shape: shape}), do: tensor_shape_rank!(shape)
+  @doc false
   def rank(value), do: value |> shape() |> tensor_shape_rank!()
 
-  @doc """
-  Returns the number of elements for a tensor-like value or compile-time spec.
-
-  Structured tuple/list results are handled recursively.
-  """
+  @doc false
   def numel(%Typespec{type: :tuple, shape: children}) when is_list(children),
     do: Enum.map(children, &numel/1)
 
+  @doc false
   def numel(%Typespec{shape: shape}), do: tensor_shape_numel!(shape)
+  @doc false
   def numel(value), do: value |> shape() |> tensor_shape_numel!()
 
-  @doc """
-  Returns the normalized element type for a tensor-like value or compile-time
-  spec.
-
-  Tuples and lists of tensor-like maps are handled recursively.
-  """
+  @doc false
   def type(%Typespec{type: :tuple, shape: children}) when is_list(children),
     do: Enum.map(children, &type/1)
 
+  @doc false
   def type(%Typespec{type: type}), do: type
+  @doc false
   def type(value), do: tensor_metadata(value, :type)
 
-  @doc """
-  Alias for `type/1`.
-  """
+  @doc false
   def dtype(value), do: type(value)
 
-  @doc """
-  Returns the flat values for a tensor-like runtime value.
-
-  Tuples and lists of tensor-like maps are handled recursively.
-  """
+  @doc false
   def values(%Typespec{}) do
     raise ArgumentError, "compile-time Triton specs do not contain runtime values"
   end
 
+  @doc false
   def values(value), do: tensor_metadata(value, :values)
 
   @doc """
@@ -348,11 +343,21 @@ defmodule Triton do
   """
   def tuple_spec(children) when is_list(children), do: Typespec.tuple(children)
 
-  @doc """
-  Formats a compile-time argument spec as a readable type string.
-  """
+  @doc false
   def spec_to_string(%Typespec{} = spec), do: Typespec.type_to_string(spec)
+  @doc false
   def spec_to_string(value), do: value |> spec() |> Typespec.type_to_string()
+
+  @doc """
+  Ceiling division, the workhorse of launch-grid arithmetic.
+
+      iex> Triton.cdiv(10, 4)
+      3
+
+      iex> Triton.cdiv(8, 4)
+      2
+  """
+  def cdiv(a, b) when is_integer(a) and is_integer(b) and b > 0, do: div(a + b - 1, b)
 
   @doc """
   Builds a pointer element type for compile-time specs.
@@ -368,7 +373,7 @@ defmodule Triton do
   Marks an argument as a compile-time constant in `jit/2`, `run/3`, and `launch/3`.
 
   This is a positional shorthand for `constants:`. For example,
-  `[Triton.tensor_spec(:float32, {128}), Triton.constexpr(128)]` compiles a
+  `[Triton.tensor_spec(:f32, {128}), Triton.constexpr(128)]` compiles a
   two-argument function with the second argument supplied at trace time.
   """
   def constexpr(value), do: %Constexpr{value: value}
@@ -379,11 +384,10 @@ defmodule Triton do
   def constexpr?(%Constexpr{}), do: true
   def constexpr?(_value), do: false
 
-  @doc """
-  Returns the value wrapped by `constexpr/1`.
-  """
+  @doc false
   def constexpr_value(%Constexpr{value: value}), do: value
 
+  @doc false
   def constexpr_value(value) do
     raise ArgumentError, "expected a Triton constexpr marker, got #{inspect(value)}"
   end
@@ -402,28 +406,10 @@ defmodule Triton do
   """
   def native_status, do: Triton.NIF.native_status()
 
-  @doc """
-  Converts tensor-like values back to shaped Elixir values.
-
-  Tuples and lists of tensor-like maps are converted recursively, which is
-  useful for `return: :tensor` results from tuple-returning kernels or launches.
-  Pass `:shape`, `:type`, or `:dtype` to normalize a single value while
-  converting it.
-
-  ## Examples
-
-      iex> Triton.to_list(%{shape: {2, 2}, type: {:s, 32}, values: [1, 2, 3, 4]})
-      [[1, 2], [3, 4]]
-
-      iex> Triton.to_list(%{shape: {}, type: {:s, 64}, values: [10]})
-      10
-
-      iex> Triton.to_list({%{shape: {2}, values: [1, 2]}, %{shape: {}, values: [3]}})
-      {[1, 2], 3}
-
-  """
+  @doc false
   def to_list(nil), do: nil
 
+  @doc false
   def to_list(value) when is_tuple(value) do
     value
     |> Tuple.to_list()
@@ -431,6 +417,7 @@ defmodule Triton do
     |> List.to_tuple()
   end
 
+  @doc false
   def to_list([_head | _tail] = values) do
     if Enum.all?(values, &structured_tensor_result?/1) do
       Enum.map(values, &to_list/1)
@@ -439,18 +426,19 @@ defmodule Triton do
     end
   end
 
+  @doc false
   def to_list(value) do
     tensor_to_list(value)
   end
 
+  @doc false
   def to_list(value, opts) when is_list(opts), do: to_list_with_opts(value, opts)
 
   @doc """
-  Converts tensor-like values into Nx tensors when Nx is available.
+  Converts tensor-like values into Nx tensors.
 
   Tuples and lists of tensor-like maps are converted recursively, matching the
-  shape of `return: :tensor` kernel and launch results. Triton does not depend
-  on Nx directly; calling this function without Nx loaded raises a clear error.
+  shape of `return: :tensor` kernel and launch results.
   Pass `:type` or `:dtype` to normalize values while converting them. `:shape`
   can be used for a single tensor-like value; it is rejected for structured
   tuple/list results because one shape cannot be applied unambiguously to every
@@ -537,11 +525,6 @@ defmodule Triton do
   end
 
   defp tensor_to_nx(value, opts \\ []) do
-    unless Code.ensure_loaded?(Nx) and function_exported?(Nx, :tensor, 2) do
-      raise ArgumentError,
-            "cannot convert Triton tensors to Nx tensors because Nx.tensor/2 is unavailable"
-    end
-
     %{shape: shape, type: type, values: values} = tensor(value, opts)
 
     if values == [] do
@@ -551,7 +534,7 @@ defmodule Triton do
 
     data = nest_tensor_values(values, Tuple.to_list(shape))
 
-    apply(Nx, :tensor, [data, [type: type]])
+    Nx.tensor(data, type: type)
   end
 
   defp tensor_metadata(nil, _key), do: nil
@@ -632,7 +615,7 @@ defmodule Triton do
     |> Enum.all?(&(is_integer(&1) and &1 >= 0))
   end
 
-  defp tensor_like_state(%{__struct__: Nx.Tensor} = value), do: tensor_like_leaf_state(value)
+  defp tensor_like_state(%Nx.Tensor{} = value), do: tensor_like_leaf_state(value)
 
   defp tensor_like_state(%{shape: shape} = value)
        when is_integer(shape) or is_tuple(shape) or is_list(shape),
@@ -724,35 +707,38 @@ defmodule Triton do
     Compiler.compile(fun, args, opts)
   end
 
-  @doc """
-  Returns the readable expression form of a traced kernel.
-  """
+  @doc false
   def to_string(%Kernel{} = kernel), do: Kernel.to_string(kernel)
 
+  @doc false
   def to_string(%KernelFunction{} = kernel_fun) do
     kernel_fun
     |> jit()
     |> Kernel.to_string()
   end
 
+  @doc false
   def to_string(%{kind: kind} = wrapper) when kind in [:autotune, :heuristics] do
     wrapper
     |> jit()
     |> Kernel.to_string()
   end
 
+  @doc false
   def to_string(fun) when is_function(fun) do
     fun
     |> jit()
     |> Kernel.to_string()
   end
 
+  @doc false
   def to_string(%KernelFunction{} = kernel_fun, opts) when is_list(opts) do
     kernel_fun
     |> jit_from_args_or_opts(opts)
     |> Kernel.to_string()
   end
 
+  @doc false
   def to_string(%{kind: kind} = wrapper, opts)
       when kind in [:autotune, :heuristics] and is_list(opts) do
     wrapper
@@ -760,12 +746,14 @@ defmodule Triton do
     |> Kernel.to_string()
   end
 
+  @doc false
   def to_string(fun, opts) when is_function(fun) and is_list(opts) do
     fun
     |> jit_from_args_or_opts(opts)
     |> Kernel.to_string()
   end
 
+  @doc false
   def to_string(%KernelFunction{} = kernel_fun, args, opts)
       when is_list(args) and is_list(opts) do
     kernel_fun
@@ -773,6 +761,7 @@ defmodule Triton do
     |> Kernel.to_string()
   end
 
+  @doc false
   def to_string(%{kind: kind} = wrapper, args, opts)
       when kind in [:autotune, :heuristics] and is_list(args) and is_list(opts) do
     wrapper
@@ -780,35 +769,38 @@ defmodule Triton do
     |> Kernel.to_string()
   end
 
+  @doc false
   def to_string(fun, args, opts) when is_function(fun) and is_list(args) and is_list(opts) do
     fun
     |> jit(args, opts)
     |> Kernel.to_string()
   end
 
-  @doc """
-  Returns textual TTIR-like MLIR for a traced kernel.
-  """
+  @doc false
   def to_ttir_string(%Kernel{} = kernel), do: Kernel.to_ttir_string(kernel)
 
+  @doc false
   def to_ttir_string(%KernelFunction{} = kernel_fun) do
     kernel_fun
     |> jit(backend: :ttir)
     |> Kernel.to_ttir_string()
   end
 
+  @doc false
   def to_ttir_string(%{kind: kind} = wrapper) when kind in [:autotune, :heuristics] do
     wrapper
     |> jit(backend: :ttir)
     |> Kernel.to_ttir_string()
   end
 
+  @doc false
   def to_ttir_string(fun) when is_function(fun) do
     fun
     |> jit(backend: :ttir)
     |> Kernel.to_ttir_string()
   end
 
+  @doc false
   def to_ttir_string(%KernelFunction{} = kernel_fun, opts) when is_list(opts) do
     if Keyword.keyword?(opts) do
       kernel_fun
@@ -821,6 +813,7 @@ defmodule Triton do
     end
   end
 
+  @doc false
   def to_ttir_string(%{kind: kind} = wrapper, opts)
       when kind in [:autotune, :heuristics] and is_list(opts) do
     if Keyword.keyword?(opts) do
@@ -834,6 +827,7 @@ defmodule Triton do
     end
   end
 
+  @doc false
   def to_ttir_string(fun, opts) when is_function(fun) and is_list(opts) do
     if Keyword.keyword?(opts) do
       fun
@@ -846,6 +840,7 @@ defmodule Triton do
     end
   end
 
+  @doc false
   def to_ttir_string(%KernelFunction{} = kernel_fun, args, opts)
       when is_list(args) and is_list(opts) do
     kernel_fun
@@ -853,6 +848,7 @@ defmodule Triton do
     |> Kernel.to_ttir_string()
   end
 
+  @doc false
   def to_ttir_string(%{kind: kind} = wrapper, args, opts)
       when kind in [:autotune, :heuristics] and is_list(args) and is_list(opts) do
     wrapper
@@ -860,6 +856,7 @@ defmodule Triton do
     |> Kernel.to_ttir_string()
   end
 
+  @doc false
   def to_ttir_string(fun, args, opts)
       when is_function(fun) and is_list(args) and is_list(opts) do
     fun
@@ -867,35 +864,38 @@ defmodule Triton do
     |> Kernel.to_ttir_string()
   end
 
-  @doc """
-  Verifies a traced kernel and returns `:ok` or `{:error, errors}`.
-  """
+  @doc false
   def verify(%Kernel{} = kernel), do: Kernel.verify(kernel)
 
+  @doc false
   def verify(%KernelFunction{} = kernel_fun) do
     kernel_fun
     |> jit()
     |> Kernel.verify()
   end
 
+  @doc false
   def verify(%{kind: kind} = wrapper) when kind in [:autotune, :heuristics] do
     wrapper
     |> jit()
     |> Kernel.verify()
   end
 
+  @doc false
   def verify(fun) when is_function(fun) do
     fun
     |> jit()
     |> Kernel.verify()
   end
 
+  @doc false
   def verify(%KernelFunction{} = kernel_fun, opts) when is_list(opts) do
     kernel_fun
     |> jit_from_args_or_opts(opts)
     |> Kernel.verify()
   end
 
+  @doc false
   def verify(%{kind: kind} = wrapper, opts)
       when kind in [:autotune, :heuristics] and is_list(opts) do
     wrapper
@@ -903,12 +903,14 @@ defmodule Triton do
     |> Kernel.verify()
   end
 
+  @doc false
   def verify(fun, opts) when is_function(fun) and is_list(opts) do
     fun
     |> jit_from_args_or_opts(opts)
     |> Kernel.verify()
   end
 
+  @doc false
   def verify(%KernelFunction{} = kernel_fun, args, opts)
       when is_list(args) and is_list(opts) do
     kernel_fun
@@ -916,6 +918,7 @@ defmodule Triton do
     |> Kernel.verify()
   end
 
+  @doc false
   def verify(%{kind: kind} = wrapper, args, opts)
       when kind in [:autotune, :heuristics] and is_list(args) and is_list(opts) do
     wrapper
@@ -923,41 +926,45 @@ defmodule Triton do
     |> Kernel.verify()
   end
 
+  @doc false
   def verify(fun, args, opts) when is_function(fun) and is_list(args) and is_list(opts) do
     fun
     |> jit(args, opts)
     |> Kernel.verify()
   end
 
-  @doc """
-  Verifies a traced kernel, raising when verification fails.
-  """
+  @doc false
   def verify!(%Kernel{} = kernel), do: Kernel.verify!(kernel)
 
+  @doc false
   def verify!(%KernelFunction{} = kernel_fun) do
     kernel_fun
     |> jit()
     |> Kernel.verify!()
   end
 
+  @doc false
   def verify!(%{kind: kind} = wrapper) when kind in [:autotune, :heuristics] do
     wrapper
     |> jit()
     |> Kernel.verify!()
   end
 
+  @doc false
   def verify!(fun) when is_function(fun) do
     fun
     |> jit()
     |> Kernel.verify!()
   end
 
+  @doc false
   def verify!(%KernelFunction{} = kernel_fun, opts) when is_list(opts) do
     kernel_fun
     |> jit_from_args_or_opts(opts)
     |> Kernel.verify!()
   end
 
+  @doc false
   def verify!(%{kind: kind} = wrapper, opts)
       when kind in [:autotune, :heuristics] and is_list(opts) do
     wrapper
@@ -965,12 +972,14 @@ defmodule Triton do
     |> Kernel.verify!()
   end
 
+  @doc false
   def verify!(fun, opts) when is_function(fun) and is_list(opts) do
     fun
     |> jit_from_args_or_opts(opts)
     |> Kernel.verify!()
   end
 
+  @doc false
   def verify!(%KernelFunction{} = kernel_fun, args, opts)
       when is_list(args) and is_list(opts) do
     kernel_fun
@@ -978,6 +987,7 @@ defmodule Triton do
     |> Kernel.verify!()
   end
 
+  @doc false
   def verify!(%{kind: kind} = wrapper, args, opts)
       when kind in [:autotune, :heuristics] and is_list(args) and is_list(opts) do
     wrapper
@@ -985,24 +995,25 @@ defmodule Triton do
     |> Kernel.verify!()
   end
 
+  @doc false
   def verify!(fun, args, opts) when is_function(fun) and is_list(args) and is_list(opts) do
     fun
     |> jit(args, opts)
     |> Kernel.verify!()
   end
 
-  @doc """
-  Applies a post-order expression transform to a traced kernel.
-  """
+  @doc false
   def transform(%Kernel{} = kernel, fun) when is_function(fun, 1),
     do: Kernel.transform(kernel, fun)
 
+  @doc false
   def transform(%KernelFunction{} = kernel_fun, fun) when is_function(fun, 1) do
     kernel_fun
     |> jit()
     |> Kernel.transform(fun)
   end
 
+  @doc false
   def transform(%{kind: kind} = wrapper, fun)
       when kind in [:autotune, :heuristics] and is_function(fun, 1) do
     wrapper
@@ -1010,12 +1021,14 @@ defmodule Triton do
     |> Kernel.transform(fun)
   end
 
+  @doc false
   def transform(kernel_fun, fun) when is_function(kernel_fun) and is_function(fun, 1) do
     kernel_fun
     |> jit()
     |> Kernel.transform(fun)
   end
 
+  @doc false
   def transform(%KernelFunction{} = kernel_fun, opts, fun)
       when is_list(opts) and is_function(fun, 1) do
     kernel_fun
@@ -1023,6 +1036,7 @@ defmodule Triton do
     |> Kernel.transform(fun)
   end
 
+  @doc false
   def transform(%{kind: kind} = wrapper, opts, fun)
       when kind in [:autotune, :heuristics] and is_list(opts) and is_function(fun, 1) do
     wrapper
@@ -1030,6 +1044,7 @@ defmodule Triton do
     |> Kernel.transform(fun)
   end
 
+  @doc false
   def transform(kernel_fun, opts, fun)
       when is_function(kernel_fun) and is_list(opts) and is_function(fun, 1) do
     kernel_fun
@@ -1037,6 +1052,7 @@ defmodule Triton do
     |> Kernel.transform(fun)
   end
 
+  @doc false
   def transform(%KernelFunction{} = kernel_fun, args, opts, fun)
       when is_list(args) and is_list(opts) and is_function(fun, 1) do
     kernel_fun
@@ -1044,6 +1060,7 @@ defmodule Triton do
     |> Kernel.transform(fun)
   end
 
+  @doc false
   def transform(%{kind: kind} = wrapper, args, opts, fun)
       when kind in [:autotune, :heuristics] and is_list(args) and is_list(opts) and
              is_function(fun, 1) do
@@ -1052,6 +1069,7 @@ defmodule Triton do
     |> Kernel.transform(fun)
   end
 
+  @doc false
   def transform(kernel_fun, args, opts, fun)
       when is_function(kernel_fun) and is_list(args) and is_list(opts) and is_function(fun, 1) do
     kernel_fun
@@ -1059,35 +1077,38 @@ defmodule Triton do
     |> Kernel.transform(fun)
   end
 
-  @doc """
-  Constant-folds a traced kernel.
-  """
+  @doc false
   def constant_fold(%Kernel{} = kernel), do: Kernel.constant_fold(kernel)
 
+  @doc false
   def constant_fold(%KernelFunction{} = kernel_fun) do
     kernel_fun
     |> jit()
     |> Kernel.constant_fold()
   end
 
+  @doc false
   def constant_fold(%{kind: kind} = wrapper) when kind in [:autotune, :heuristics] do
     wrapper
     |> jit()
     |> Kernel.constant_fold()
   end
 
+  @doc false
   def constant_fold(fun) when is_function(fun) do
     fun
     |> jit()
     |> Kernel.constant_fold()
   end
 
+  @doc false
   def constant_fold(%KernelFunction{} = kernel_fun, opts) when is_list(opts) do
     kernel_fun
     |> jit_from_args_or_opts(opts)
     |> Kernel.constant_fold()
   end
 
+  @doc false
   def constant_fold(%{kind: kind} = wrapper, opts)
       when kind in [:autotune, :heuristics] and is_list(opts) do
     wrapper
@@ -1095,12 +1116,14 @@ defmodule Triton do
     |> Kernel.constant_fold()
   end
 
+  @doc false
   def constant_fold(fun, opts) when is_function(fun) and is_list(opts) do
     fun
     |> jit_from_args_or_opts(opts)
     |> Kernel.constant_fold()
   end
 
+  @doc false
   def constant_fold(%KernelFunction{} = kernel_fun, args, opts)
       when is_list(args) and is_list(opts) do
     kernel_fun
@@ -1108,6 +1131,7 @@ defmodule Triton do
     |> Kernel.constant_fold()
   end
 
+  @doc false
   def constant_fold(%{kind: kind} = wrapper, args, opts)
       when kind in [:autotune, :heuristics] and is_list(args) and is_list(opts) do
     wrapper
@@ -1115,38 +1139,42 @@ defmodule Triton do
     |> Kernel.constant_fold()
   end
 
+  @doc false
   def constant_fold(fun, args, opts) when is_function(fun) and is_list(args) and is_list(opts) do
     fun
     |> jit(args, opts)
     |> Kernel.constant_fold()
   end
 
-  @doc """
-  Builds an inspectable native compilation plan for a traced kernel.
-  """
+  @doc false
   def to_native_plan(%Kernel{} = kernel), do: Kernel.to_native_plan(kernel)
 
+  @doc false
   def to_native_plan(%KernelFunction{} = kernel_fun) do
     kernel_fun
     |> jit(backend: :native_plan)
     |> kernel_compiled()
   end
 
+  @doc false
   def to_native_plan(%{kind: kind} = wrapper) when kind in [:autotune, :heuristics] do
     wrapper
     |> jit(backend: :native_plan)
     |> kernel_compiled()
   end
 
+  @doc false
   def to_native_plan(fun) when is_function(fun) do
     fun
     |> jit(backend: :native_plan)
     |> kernel_compiled()
   end
 
+  @doc false
   def to_native_plan(%Kernel{} = kernel, opts) when is_list(opts),
     do: Kernel.to_native_plan(kernel, opts)
 
+  @doc false
   def to_native_plan(%KernelFunction{} = kernel_fun, opts) when is_list(opts) do
     if Keyword.keyword?(opts) do
       kernel_fun
@@ -1159,6 +1187,7 @@ defmodule Triton do
     end
   end
 
+  @doc false
   def to_native_plan(%{kind: kind} = wrapper, opts)
       when kind in [:autotune, :heuristics] and is_list(opts) do
     if Keyword.keyword?(opts) do
@@ -1172,6 +1201,7 @@ defmodule Triton do
     end
   end
 
+  @doc false
   def to_native_plan(fun, opts) when is_function(fun) and is_list(opts) do
     if Keyword.keyword?(opts) do
       fun
@@ -1184,6 +1214,7 @@ defmodule Triton do
     end
   end
 
+  @doc false
   def to_native_plan(%KernelFunction{} = kernel_fun, args, opts)
       when is_list(args) and is_list(opts) do
     kernel_fun
@@ -1191,6 +1222,7 @@ defmodule Triton do
     |> kernel_compiled()
   end
 
+  @doc false
   def to_native_plan(%{kind: kind} = wrapper, args, opts)
       when kind in [:autotune, :heuristics] and is_list(args) and is_list(opts) do
     wrapper
@@ -1198,6 +1230,7 @@ defmodule Triton do
     |> kernel_compiled()
   end
 
+  @doc false
   def to_native_plan(fun, args, opts)
       when is_function(fun) and is_list(args) and is_list(opts) do
     fun
@@ -1205,31 +1238,29 @@ defmodule Triton do
     |> kernel_compiled()
   end
 
-  @doc """
-  Writes the currently materializable native-plan cache files.
-
-  This writes the manifest payload and textual TTIR artifact, then reports
-  native-only artifacts that are still blocked or require the future native
-  backend materializer.
-  """
+  @doc false
   def materialize_native_plan_cache(plan_or_kernel, opts \\ [])
 
+  @doc false
   def materialize_native_plan_cache(%{stage: :native_plan} = plan, []) do
     Triton.Compiler.NativePlan.materialize(plan)
   end
 
+  @doc false
   def materialize_native_plan_cache(%Kernel{} = kernel, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.materialize()
   end
 
+  @doc false
   def materialize_native_plan_cache(plan_or_kernel, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.materialize()
   end
 
+  @doc false
   def materialize_native_plan_cache(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1237,31 +1268,29 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.materialize()
   end
 
-  @doc """
-  Writes a lowered native-stage result to its planned cache artifact path.
-
-  Accepts results from `native_plan_lower_ttir/1`, `native_plan_lower_ttgpuir/1`,
-  `native_plan_lower_llvmir/1`, or future PTX/device-artifact emitters. Blocked
-  `{:error, blocked}` results are returned unchanged.
-  """
+  @doc false
   def materialize_native_plan_lowering(plan_or_kernel, lowered, opts \\ [])
 
+  @doc false
   def materialize_native_plan_lowering(%{stage: :native_plan} = plan, lowered, []) do
     Triton.Compiler.NativePlan.materialize_lowering(plan, lowered)
   end
 
+  @doc false
   def materialize_native_plan_lowering(%Kernel{} = kernel, lowered, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.materialize_lowering(lowered)
   end
 
+  @doc false
   def materialize_native_plan_lowering(plan_or_kernel, lowered, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.materialize_lowering(lowered)
   end
 
+  @doc false
   def materialize_native_plan_lowering(plan_or_kernel, lowered, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1269,33 +1298,29 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.materialize_lowering(lowered)
   end
 
-  @doc """
-  Lowers a native plan through one supported native compiler stage.
-
-  Supported stages are `:ttir`, `:ttgpuir`, `:llvmir`, `:ptx`, `:artifact`,
-  and `:runtime`. The first three stages dispatch to native MLIR lowering
-  helpers. PTX, executable artifact, and runtime stages currently return
-  structured blocked results until device binary emission and native loading
-  are implemented.
-  """
+  @doc false
   def native_plan_lower_stage(plan_or_kernel, stage, opts \\ [])
 
+  @doc false
   def native_plan_lower_stage(%{stage: :native_plan} = plan, stage, []) do
     Triton.Compiler.NativePlan.lower_stage(plan, stage)
   end
 
+  @doc false
   def native_plan_lower_stage(%Kernel{} = kernel, stage, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.lower_stage(stage)
   end
 
+  @doc false
   def native_plan_lower_stage(plan_or_kernel, stage, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.lower_stage(stage)
   end
 
+  @doc false
   def native_plan_lower_stage(plan_or_kernel, stage, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1303,27 +1328,29 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.lower_stage(stage)
   end
 
-  @doc """
-  Bang variant of `native_plan_lower_stage/2,3,4`.
-  """
+  @doc false
   def native_plan_lower_stage!(plan_or_kernel, stage, opts \\ [])
 
+  @doc false
   def native_plan_lower_stage!(%{stage: :native_plan} = plan, stage, []) do
     Triton.Compiler.NativePlan.lower_stage!(plan, stage)
   end
 
+  @doc false
   def native_plan_lower_stage!(%Kernel{} = kernel, stage, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.lower_stage!(stage)
   end
 
+  @doc false
   def native_plan_lower_stage!(plan_or_kernel, stage, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.lower_stage!(stage)
   end
 
+  @doc false
   def native_plan_lower_stage!(plan_or_kernel, stage, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1331,32 +1358,29 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.lower_stage!(stage)
   end
 
-  @doc """
-  Parses a native plan's textual TTIR into the native MLIR layer and runs the
-  native NVIDIA TTIR pass stage when the optional native NIF is available.
-
-  Without the native NIF, returns `{:error, blocked}` with native availability
-  diagnostics instead of raising. This makes it useful as a preflight step on
-  machines that do not have accelerator hardware yet.
-  """
+  @doc false
   def native_plan_lower_ttir(plan_or_kernel, opts \\ [])
 
+  @doc false
   def native_plan_lower_ttir(%{stage: :native_plan} = plan, []) do
     Triton.Compiler.NativePlan.lower_ttir(plan)
   end
 
+  @doc false
   def native_plan_lower_ttir(%Kernel{} = kernel, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.lower_ttir()
   end
 
+  @doc false
   def native_plan_lower_ttir(plan_or_kernel, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.lower_ttir()
   end
 
+  @doc false
   def native_plan_lower_ttir(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1364,27 +1388,29 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.lower_ttir()
   end
 
-  @doc """
-  Bang variant of `native_plan_lower_ttir/1,2,3`.
-  """
+  @doc false
   def native_plan_lower_ttir!(plan_or_kernel, opts \\ [])
 
+  @doc false
   def native_plan_lower_ttir!(%{stage: :native_plan} = plan, []) do
     Triton.Compiler.NativePlan.lower_ttir!(plan)
   end
 
+  @doc false
   def native_plan_lower_ttir!(%Kernel{} = kernel, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.lower_ttir!()
   end
 
+  @doc false
   def native_plan_lower_ttir!(plan_or_kernel, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.lower_ttir!()
   end
 
+  @doc false
   def native_plan_lower_ttir!(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1392,32 +1418,29 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.lower_ttir!()
   end
 
-  @doc """
-  Parses a native plan's textual TTIR into native MLIR, runs the native NVIDIA
-  TTIR pass stage, then runs the native TTIR-to-TTGIR conversion and TTGIR pass
-  stage when the optional native NIF is available.
-
-  Without the native NIF, returns `{:error, blocked}` with native availability
-  diagnostics instead of raising.
-  """
+  @doc false
   def native_plan_lower_ttgpuir(plan_or_kernel, opts \\ [])
 
+  @doc false
   def native_plan_lower_ttgpuir(%{stage: :native_plan} = plan, []) do
     Triton.Compiler.NativePlan.lower_ttgpuir(plan)
   end
 
+  @doc false
   def native_plan_lower_ttgpuir(%Kernel{} = kernel, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.lower_ttgpuir()
   end
 
+  @doc false
   def native_plan_lower_ttgpuir(plan_or_kernel, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.lower_ttgpuir()
   end
 
+  @doc false
   def native_plan_lower_ttgpuir(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1425,27 +1448,29 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.lower_ttgpuir()
   end
 
-  @doc """
-  Bang variant of `native_plan_lower_ttgpuir/1,2,3`.
-  """
+  @doc false
   def native_plan_lower_ttgpuir!(plan_or_kernel, opts \\ [])
 
+  @doc false
   def native_plan_lower_ttgpuir!(%{stage: :native_plan} = plan, []) do
     Triton.Compiler.NativePlan.lower_ttgpuir!(plan)
   end
 
+  @doc false
   def native_plan_lower_ttgpuir!(%Kernel{} = kernel, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.lower_ttgpuir!()
   end
 
+  @doc false
   def native_plan_lower_ttgpuir!(plan_or_kernel, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.lower_ttgpuir!()
   end
 
+  @doc false
   def native_plan_lower_ttgpuir!(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1453,31 +1478,29 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.lower_ttgpuir!()
   end
 
-  @doc """
-  Extends native lowering through the planned LLVM IR stage when the optional
-  native NIF is available.
-
-  Without the native NIF, returns `{:error, blocked}` with native availability
-  diagnostics instead of raising.
-  """
+  @doc false
   def native_plan_lower_llvmir(plan_or_kernel, opts \\ [])
 
+  @doc false
   def native_plan_lower_llvmir(%{stage: :native_plan} = plan, []) do
     Triton.Compiler.NativePlan.lower_llvmir(plan)
   end
 
+  @doc false
   def native_plan_lower_llvmir(%Kernel{} = kernel, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.lower_llvmir()
   end
 
+  @doc false
   def native_plan_lower_llvmir(plan_or_kernel, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.lower_llvmir()
   end
 
+  @doc false
   def native_plan_lower_llvmir(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1485,27 +1508,29 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.lower_llvmir()
   end
 
-  @doc """
-  Bang variant of `native_plan_lower_llvmir/1,2,3`.
-  """
+  @doc false
   def native_plan_lower_llvmir!(plan_or_kernel, opts \\ [])
 
+  @doc false
   def native_plan_lower_llvmir!(%{stage: :native_plan} = plan, []) do
     Triton.Compiler.NativePlan.lower_llvmir!(plan)
   end
 
+  @doc false
   def native_plan_lower_llvmir!(%Kernel{} = kernel, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.lower_llvmir!()
   end
 
+  @doc false
   def native_plan_lower_llvmir!(plan_or_kernel, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.lower_llvmir!()
   end
 
+  @doc false
   def native_plan_lower_llvmir!(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1513,27 +1538,29 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.lower_llvmir!()
   end
 
-  @doc """
-  Inspects which native-plan cache files are present on disk.
-  """
+  @doc false
   def native_plan_cache_status(plan_or_kernel, opts \\ [])
 
+  @doc false
   def native_plan_cache_status(%{stage: :native_plan} = plan, []) do
     Triton.Compiler.NativePlan.cache_status(plan)
   end
 
+  @doc false
   def native_plan_cache_status(%Kernel{} = kernel, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.cache_status()
   end
 
+  @doc false
   def native_plan_cache_status(plan_or_kernel, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.cache_status()
   end
 
+  @doc false
   def native_plan_cache_status(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1541,31 +1568,29 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.cache_status()
   end
 
-  @doc """
-  Builds artifact handoff requests for every native-plan stage.
-
-  Each request reports the planned output artifact, prerequisite input
-  artifacts, cache-file presence, requirement blockers, and whether that stage
-  can be produced with the currently available implementation.
-  """
+  @doc false
   def native_plan_artifact_requests(plan_or_kernel, opts \\ [])
 
+  @doc false
   def native_plan_artifact_requests(%{stage: :native_plan} = plan, []) do
     Triton.Compiler.NativePlan.artifact_requests(plan)
   end
 
+  @doc false
   def native_plan_artifact_requests(%Kernel{} = kernel, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.artifact_requests()
   end
 
+  @doc false
   def native_plan_artifact_requests(plan_or_kernel, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.artifact_requests()
   end
 
+  @doc false
   def native_plan_artifact_requests(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1573,30 +1598,29 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.artifact_requests()
   end
 
-  @doc """
-  Builds one artifact handoff request for a native-plan stage.
-
-  Supported stages are `:ttir`, `:ttgpuir`, `:llvmir`, `:ptx`, `:artifact`,
-  and `:runtime`.
-  """
+  @doc false
   def native_plan_artifact_request(plan_or_kernel, stage, opts \\ [])
 
+  @doc false
   def native_plan_artifact_request(%{stage: :native_plan} = plan, stage, []) do
     Triton.Compiler.NativePlan.artifact_request(plan, stage)
   end
 
+  @doc false
   def native_plan_artifact_request(%Kernel{} = kernel, stage, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.artifact_request(stage)
   end
 
+  @doc false
   def native_plan_artifact_request(plan_or_kernel, stage, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.artifact_request(stage)
   end
 
+  @doc false
   def native_plan_artifact_request(plan_or_kernel, stage, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1604,30 +1628,29 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.artifact_request(stage)
   end
 
-  @doc """
-  Builds all executable-boundary handoff requests for a native plan.
-
-  The returned map contains `:ptx`, `:device_binary`, and `:runtime_loader`
-  requests. Each request is inspectable and side-effect-free.
-  """
+  @doc false
   def native_plan_executable_requests(plan_or_kernel, opts \\ [])
 
+  @doc false
   def native_plan_executable_requests(%{stage: _stage} = plan, []) do
     Triton.Compiler.NativePlan.executable_requests(plan)
   end
 
+  @doc false
   def native_plan_executable_requests(%Kernel{} = kernel, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.executable_requests()
   end
 
+  @doc false
   def native_plan_executable_requests(plan_or_kernel, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.executable_requests()
   end
 
+  @doc false
   def native_plan_executable_requests(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1635,33 +1658,29 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.executable_requests()
   end
 
-  @doc """
-  Builds the offline PTX emission handoff request for a native plan.
-
-  The request describes the planned LLVM/NVPTX emission boundary that would turn
-  a materialized LLVM IR cache artifact into the planned PTX cache artifact,
-  including input/output cache paths, target triple/processor metadata, the
-  expected native emitter hook, and current readiness diagnostics. It never
-  emits PTX.
-  """
+  @doc false
   def native_plan_ptx_request(plan_or_kernel, opts \\ [])
 
+  @doc false
   def native_plan_ptx_request(%{stage: _stage} = plan, []) do
     Triton.Compiler.NativePlan.ptx_request(plan)
   end
 
+  @doc false
   def native_plan_ptx_request(%Kernel{} = kernel, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.ptx_request()
   end
 
+  @doc false
   def native_plan_ptx_request(plan_or_kernel, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.ptx_request()
   end
 
+  @doc false
   def native_plan_ptx_request(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1669,32 +1688,29 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.ptx_request()
   end
 
-  @doc """
-  Builds the offline device-binary handoff request for a native plan.
-
-  The request describes the planned `ptxas` invocation that would turn a
-  materialized PTX cache artifact into the planned CUBIN cache artifact,
-  including input/output cache paths, architecture mapping, tool discovery, and
-  current readiness diagnostics. It never executes `ptxas`.
-  """
+  @doc false
   def native_plan_device_binary_request(plan_or_kernel, opts \\ [])
 
+  @doc false
   def native_plan_device_binary_request(%{stage: _stage} = plan, []) do
     Triton.Compiler.NativePlan.device_binary_request(plan)
   end
 
+  @doc false
   def native_plan_device_binary_request(%Kernel{} = kernel, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.device_binary_request()
   end
 
+  @doc false
   def native_plan_device_binary_request(plan_or_kernel, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.device_binary_request()
   end
 
+  @doc false
   def native_plan_device_binary_request(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1702,20 +1718,15 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.device_binary_request()
   end
 
-  @doc """
-  Emits the planned device binary by running `ptxas` on a materialized PTX
-  artifact.
-
-  This is an offline helper for the PTX-to-CUBIN boundary. It does not require
-  accelerator hardware, but it does require the PTX cache artifact and `ptxas`
-  to be available. Pass `ptxas_path: "/path/to/ptxas"` to use an explicit tool.
-  """
+  @doc false
   def native_plan_emit_device_binary(plan_or_kernel, opts \\ [])
 
+  @doc false
   def native_plan_emit_device_binary(%{stage: _stage} = plan, opts) when is_list(opts) do
     Triton.Compiler.NativePlan.emit_device_binary(plan, opts)
   end
 
+  @doc false
   def native_plan_emit_device_binary(%Kernel{} = kernel, opts) when is_list(opts) do
     emit_opts = Keyword.take(opts, [:ptxas_path])
     plan_opts = Keyword.drop(opts, [:ptxas_path])
@@ -1725,6 +1736,7 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.emit_device_binary(emit_opts)
   end
 
+  @doc false
   def native_plan_emit_device_binary(plan_or_kernel, opts) when is_list(opts) do
     emit_opts = Keyword.take(opts, [:ptxas_path])
     plan_opts = Keyword.drop(opts, [:ptxas_path])
@@ -1734,6 +1746,7 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.emit_device_binary(emit_opts)
   end
 
+  @doc false
   def native_plan_emit_device_binary(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     emit_opts = Keyword.take(opts, [:ptxas_path])
@@ -1744,15 +1757,15 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.emit_device_binary(emit_opts)
   end
 
-  @doc """
-  Bang variant of `native_plan_emit_device_binary/1,2,3`.
-  """
+  @doc false
   def native_plan_emit_device_binary!(plan_or_kernel, opts \\ [])
 
+  @doc false
   def native_plan_emit_device_binary!(%{stage: _stage} = plan, opts) when is_list(opts) do
     Triton.Compiler.NativePlan.emit_device_binary!(plan, opts)
   end
 
+  @doc false
   def native_plan_emit_device_binary!(%Kernel{} = kernel, opts) when is_list(opts) do
     emit_opts = Keyword.take(opts, [:ptxas_path])
     plan_opts = Keyword.drop(opts, [:ptxas_path])
@@ -1762,6 +1775,7 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.emit_device_binary!(emit_opts)
   end
 
+  @doc false
   def native_plan_emit_device_binary!(plan_or_kernel, opts) when is_list(opts) do
     emit_opts = Keyword.take(opts, [:ptxas_path])
     plan_opts = Keyword.drop(opts, [:ptxas_path])
@@ -1771,6 +1785,7 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.emit_device_binary!(emit_opts)
   end
 
+  @doc false
   def native_plan_emit_device_binary!(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     emit_opts = Keyword.take(opts, [:ptxas_path])
@@ -1781,33 +1796,29 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.emit_device_binary!(emit_opts)
   end
 
-  @doc """
-  Builds the offline runtime-loader handoff request for a native plan.
-
-  The request describes the planned CUDA-driver/native loader boundary that
-  would turn a materialized device binary cache artifact into a loaded
-  executable handle, including input/output cache paths, runtime metadata, the
-  expected native loader hook, and current readiness diagnostics. It never
-  loads or launches device code.
-  """
+  @doc false
   def native_plan_runtime_loader_request(plan_or_kernel, opts \\ [])
 
+  @doc false
   def native_plan_runtime_loader_request(%{stage: _stage} = plan, []) do
     Triton.Compiler.NativePlan.runtime_loader_request(plan)
   end
 
+  @doc false
   def native_plan_runtime_loader_request(%Kernel{} = kernel, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.runtime_loader_request()
   end
 
+  @doc false
   def native_plan_runtime_loader_request(plan_or_kernel, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.runtime_loader_request()
   end
 
+  @doc false
   def native_plan_runtime_loader_request(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1815,16 +1826,14 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.runtime_loader_request()
   end
 
-  @doc """
-  Returns true when the materialized native-plan cache is usable for the
-  currently available non-native artifacts.
-  """
+  @doc false
   def native_plan_cache_usable?(plan_or_kernel, opts \\ []) do
     plan_or_kernel
     |> native_plan_cache_status(opts)
     |> Map.get(:usable?, false)
   end
 
+  @doc false
   def native_plan_cache_usable?(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1832,31 +1841,29 @@ defmodule Triton do
     |> Map.get(:usable?, false)
   end
 
-  @doc """
-  Validates the internal consistency of a native plan.
-
-  This checks the plan map before anything is written to disk: cache keys,
-  manifest/runtime mirrors, artifact layouts, ABI runtime ordering, and
-  readiness metadata must agree.
-  """
+  @doc false
   def validate_native_plan(plan_or_kernel, opts \\ [])
 
+  @doc false
   def validate_native_plan(%{stage: _stage} = plan, []) do
     Triton.Compiler.NativePlan.validate(plan)
   end
 
+  @doc false
   def validate_native_plan(%Kernel{} = kernel, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.validate()
   end
 
+  @doc false
   def validate_native_plan(plan_or_kernel, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.validate()
   end
 
+  @doc false
   def validate_native_plan(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1864,27 +1871,29 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.validate()
   end
 
-  @doc """
-  Returns native-plan validation errors without wrapping them in `{:error, errors}`.
-  """
+  @doc false
   def native_plan_validation_errors(plan_or_kernel, opts \\ [])
 
+  @doc false
   def native_plan_validation_errors(%{stage: _stage} = plan, []) do
     Triton.Compiler.NativePlan.validation_errors(plan)
   end
 
+  @doc false
   def native_plan_validation_errors(%Kernel{} = kernel, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.validation_errors()
   end
 
+  @doc false
   def native_plan_validation_errors(plan_or_kernel, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.validation_errors()
   end
 
+  @doc false
   def native_plan_validation_errors(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1892,31 +1901,29 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.validation_errors()
   end
 
-  @doc """
-  Returns a native-plan preflight report.
-
-  The report combines in-memory validation, readiness, blockers, summary, and
-  cache status so callers can inspect whether a plan is internally consistent,
-  materialized, and executable before handing it to a future native loader.
-  """
+  @doc false
   def native_plan_preflight(plan_or_kernel, opts \\ [])
 
+  @doc false
   def native_plan_preflight(%{stage: _stage} = plan, []) do
     native_plan_preflight_report(plan)
   end
 
+  @doc false
   def native_plan_preflight(%Kernel{} = kernel, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> native_plan_preflight_report()
   end
 
+  @doc false
   def native_plan_preflight(plan_or_kernel, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> native_plan_preflight_report()
   end
 
+  @doc false
   def native_plan_preflight(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -1924,29 +1931,27 @@ defmodule Triton do
     |> native_plan_preflight_report()
   end
 
-  @doc """
-  Validates runtime arguments against a native plan's ABI.
-
-  This checks the dynamic runtime argument count plus inferred shape/type
-  metadata for non-pointer arguments. Pointer arguments are accepted as opaque
-  device-pointer bindings unless the value itself carries pointer type metadata.
-  """
+  @doc false
   def validate_native_plan_runtime_args(plan_or_kernel, args)
 
+  @doc false
   def validate_native_plan_runtime_args(%{stage: _stage} = plan, args) do
     Triton.Compiler.NativePlan.validate_runtime_args(plan, args)
   end
 
+  @doc false
   def validate_native_plan_runtime_args(%Kernel{compiled: %{stage: :native_plan} = plan}, args) do
     Triton.Compiler.NativePlan.validate_runtime_args(plan, args)
   end
 
+  @doc false
   def validate_native_plan_runtime_args(%Kernel{} = kernel, args) do
     kernel
     |> Kernel.to_native_plan()
     |> Triton.Compiler.NativePlan.validate_runtime_args(args)
   end
 
+  @doc false
   def validate_native_plan_runtime_args(%Kernel{} = kernel, runtime_args, opts)
       when is_list(runtime_args) and is_list(opts) do
     kernel
@@ -1954,6 +1959,7 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.validate_runtime_args(runtime_args)
   end
 
+  @doc false
   def validate_native_plan_runtime_args(plan_or_kernel, compile_args, runtime_args, opts)
       when is_list(compile_args) and is_list(runtime_args) and is_list(opts) do
     plan_or_kernel
@@ -1961,26 +1967,27 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.validate_runtime_args(runtime_args)
   end
 
-  @doc """
-  Validates native-plan runtime arguments and raises `ArgumentError` when they
-  do not match the native plan ABI.
-  """
+  @doc false
   def validate_native_plan_runtime_args!(plan_or_kernel, args)
 
+  @doc false
   def validate_native_plan_runtime_args!(%{stage: _stage} = plan, args) do
     Triton.Compiler.NativePlan.validate_runtime_args!(plan, args)
   end
 
+  @doc false
   def validate_native_plan_runtime_args!(%Kernel{compiled: %{stage: :native_plan} = plan}, args) do
     Triton.Compiler.NativePlan.validate_runtime_args!(plan, args)
   end
 
+  @doc false
   def validate_native_plan_runtime_args!(%Kernel{} = kernel, args) do
     kernel
     |> Kernel.to_native_plan()
     |> Triton.Compiler.NativePlan.validate_runtime_args!(args)
   end
 
+  @doc false
   def validate_native_plan_runtime_args!(%Kernel{} = kernel, runtime_args, opts)
       when is_list(runtime_args) and is_list(opts) do
     kernel
@@ -1988,6 +1995,7 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.validate_runtime_args!(runtime_args)
   end
 
+  @doc false
   def validate_native_plan_runtime_args!(plan_or_kernel, compile_args, runtime_args, opts)
       when is_list(compile_args) and is_list(runtime_args) and is_list(opts) do
     plan_or_kernel
@@ -1995,25 +2003,27 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.validate_runtime_args!(runtime_args)
   end
 
-  @doc """
-  Returns native-plan runtime argument validation errors.
-  """
+  @doc false
   def native_plan_runtime_arg_errors(plan_or_kernel, args)
 
+  @doc false
   def native_plan_runtime_arg_errors(%{stage: _stage} = plan, args) do
     Triton.Compiler.NativePlan.runtime_arg_validation_errors(plan, args)
   end
 
+  @doc false
   def native_plan_runtime_arg_errors(%Kernel{compiled: %{stage: :native_plan} = plan}, args) do
     Triton.Compiler.NativePlan.runtime_arg_validation_errors(plan, args)
   end
 
+  @doc false
   def native_plan_runtime_arg_errors(%Kernel{} = kernel, args) do
     kernel
     |> Kernel.to_native_plan()
     |> Triton.Compiler.NativePlan.runtime_arg_validation_errors(args)
   end
 
+  @doc false
   def native_plan_runtime_arg_errors(%Kernel{} = kernel, runtime_args, opts)
       when is_list(runtime_args) and is_list(opts) do
     kernel
@@ -2021,6 +2031,7 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.runtime_arg_validation_errors(runtime_args)
   end
 
+  @doc false
   def native_plan_runtime_arg_errors(plan_or_kernel, compile_args, runtime_args, opts)
       when is_list(compile_args) and is_list(runtime_args) and is_list(opts) do
     plan_or_kernel
@@ -2028,29 +2039,27 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.runtime_arg_validation_errors(runtime_args)
   end
 
-  @doc """
-  Builds ordered native runtime argument bindings for a future loader handoff.
-
-  The returned binding contract includes the native entry metadata plus one
-  binding per dynamic runtime argument with the original value, expected ABI
-  metadata, inferred actual metadata, and passing convention.
-  """
+  @doc false
   def native_plan_runtime_arg_bindings(plan_or_kernel, args)
 
+  @doc false
   def native_plan_runtime_arg_bindings(%{stage: _stage} = plan, args) do
     Triton.Compiler.NativePlan.runtime_arg_bindings(plan, args)
   end
 
+  @doc false
   def native_plan_runtime_arg_bindings(%Kernel{compiled: %{stage: :native_plan} = plan}, args) do
     Triton.Compiler.NativePlan.runtime_arg_bindings(plan, args)
   end
 
+  @doc false
   def native_plan_runtime_arg_bindings(%Kernel{} = kernel, args) do
     kernel
     |> Kernel.to_native_plan()
     |> Triton.Compiler.NativePlan.runtime_arg_bindings(args)
   end
 
+  @doc false
   def native_plan_runtime_arg_bindings(%Kernel{} = kernel, runtime_args, opts)
       when is_list(runtime_args) and is_list(opts) do
     kernel
@@ -2058,6 +2067,7 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.runtime_arg_bindings(runtime_args)
   end
 
+  @doc false
   def native_plan_runtime_arg_bindings(plan_or_kernel, compile_args, runtime_args, opts)
       when is_list(compile_args) and is_list(runtime_args) and is_list(opts) do
     plan_or_kernel
@@ -2065,26 +2075,27 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.runtime_arg_bindings(runtime_args)
   end
 
-  @doc """
-  Builds native runtime argument bindings or raises `ArgumentError` when the
-  arguments do not match the native plan ABI.
-  """
+  @doc false
   def native_plan_runtime_arg_bindings!(plan_or_kernel, args)
 
+  @doc false
   def native_plan_runtime_arg_bindings!(%{stage: _stage} = plan, args) do
     Triton.Compiler.NativePlan.runtime_arg_bindings!(plan, args)
   end
 
+  @doc false
   def native_plan_runtime_arg_bindings!(%Kernel{compiled: %{stage: :native_plan} = plan}, args) do
     Triton.Compiler.NativePlan.runtime_arg_bindings!(plan, args)
   end
 
+  @doc false
   def native_plan_runtime_arg_bindings!(%Kernel{} = kernel, args) do
     kernel
     |> Kernel.to_native_plan()
     |> Triton.Compiler.NativePlan.runtime_arg_bindings!(args)
   end
 
+  @doc false
   def native_plan_runtime_arg_bindings!(%Kernel{} = kernel, runtime_args, opts)
       when is_list(runtime_args) and is_list(opts) do
     kernel
@@ -2092,6 +2103,7 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.runtime_arg_bindings!(runtime_args)
   end
 
+  @doc false
   def native_plan_runtime_arg_bindings!(plan_or_kernel, compile_args, runtime_args, opts)
       when is_list(compile_args) and is_list(runtime_args) and is_list(opts) do
     plan_or_kernel
@@ -2099,29 +2111,27 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.runtime_arg_bindings!(runtime_args)
   end
 
-  @doc """
-  Builds a validated native runtime request for a future loader.
-
-  The request combines launch/tuning metadata, loader artifact metadata, runtime
-  argument bindings, compile-time constants, cache/artifact locations, result
-  metadata, and current readiness diagnostics.
-  """
+  @doc false
   def native_plan_runtime_request(plan_or_kernel, args)
 
+  @doc false
   def native_plan_runtime_request(%{stage: _stage} = plan, args) do
     Triton.Compiler.NativePlan.runtime_request(plan, args)
   end
 
+  @doc false
   def native_plan_runtime_request(%Kernel{compiled: %{stage: :native_plan} = plan}, args) do
     Triton.Compiler.NativePlan.runtime_request(plan, args)
   end
 
+  @doc false
   def native_plan_runtime_request(%Kernel{} = kernel, args) do
     kernel
     |> Kernel.to_native_plan()
     |> Triton.Compiler.NativePlan.runtime_request(args)
   end
 
+  @doc false
   def native_plan_runtime_request(%Kernel{} = kernel, runtime_args, opts)
       when is_list(runtime_args) and is_list(opts) do
     kernel
@@ -2129,6 +2139,7 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.runtime_request(runtime_args)
   end
 
+  @doc false
   def native_plan_runtime_request(plan_or_kernel, compile_args, runtime_args, opts)
       when is_list(compile_args) and is_list(runtime_args) and is_list(opts) do
     plan_or_kernel
@@ -2136,26 +2147,27 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.runtime_request(runtime_args)
   end
 
-  @doc """
-  Builds a native runtime request or raises `ArgumentError` when the plan or
-  runtime arguments are invalid.
-  """
+  @doc false
   def native_plan_runtime_request!(plan_or_kernel, args)
 
+  @doc false
   def native_plan_runtime_request!(%{stage: _stage} = plan, args) do
     Triton.Compiler.NativePlan.runtime_request!(plan, args)
   end
 
+  @doc false
   def native_plan_runtime_request!(%Kernel{compiled: %{stage: :native_plan} = plan}, args) do
     Triton.Compiler.NativePlan.runtime_request!(plan, args)
   end
 
+  @doc false
   def native_plan_runtime_request!(%Kernel{} = kernel, args) do
     kernel
     |> Kernel.to_native_plan()
     |> Triton.Compiler.NativePlan.runtime_request!(args)
   end
 
+  @doc false
   def native_plan_runtime_request!(%Kernel{} = kernel, runtime_args, opts)
       when is_list(runtime_args) and is_list(opts) do
     kernel
@@ -2163,6 +2175,7 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.runtime_request!(runtime_args)
   end
 
+  @doc false
   def native_plan_runtime_request!(plan_or_kernel, compile_args, runtime_args, opts)
       when is_list(compile_args) and is_list(runtime_args) and is_list(opts) do
     plan_or_kernel
@@ -2170,25 +2183,27 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.runtime_request!(runtime_args)
   end
 
-  @doc """
-  Returns a native-plan preflight report including runtime argument validation.
-  """
+  @doc false
   def native_plan_runtime_preflight(plan_or_kernel, args)
 
+  @doc false
   def native_plan_runtime_preflight(%{stage: _stage} = plan, args) do
     native_plan_runtime_preflight_report(plan, args)
   end
 
+  @doc false
   def native_plan_runtime_preflight(%Kernel{compiled: %{stage: :native_plan} = plan}, args) do
     native_plan_runtime_preflight_report(plan, args)
   end
 
+  @doc false
   def native_plan_runtime_preflight(%Kernel{} = kernel, args) do
     kernel
     |> Kernel.to_native_plan()
     |> native_plan_runtime_preflight_report(args)
   end
 
+  @doc false
   def native_plan_runtime_preflight(%Kernel{} = kernel, runtime_args, opts)
       when is_list(runtime_args) and is_list(opts) do
     kernel
@@ -2196,6 +2211,7 @@ defmodule Triton do
     |> native_plan_runtime_preflight_report(runtime_args)
   end
 
+  @doc false
   def native_plan_runtime_preflight(plan_or_kernel, compile_args, runtime_args, opts)
       when is_list(compile_args) and is_list(runtime_args) and is_list(opts) do
     plan_or_kernel
@@ -2203,27 +2219,29 @@ defmodule Triton do
     |> native_plan_runtime_preflight_report(runtime_args)
   end
 
-  @doc """
-  Validates a native plan and raises `ArgumentError` when it is inconsistent.
-  """
+  @doc false
   def validate_native_plan!(plan_or_kernel, opts \\ [])
 
+  @doc false
   def validate_native_plan!(%{stage: _stage} = plan, []) do
     Triton.Compiler.NativePlan.validate!(plan)
   end
 
+  @doc false
   def validate_native_plan!(%Kernel{} = kernel, opts) when is_list(opts) do
     kernel
     |> Kernel.to_native_plan(opts)
     |> Triton.Compiler.NativePlan.validate!()
   end
 
+  @doc false
   def validate_native_plan!(plan_or_kernel, opts) when is_list(opts) do
     plan_or_kernel
     |> to_native_plan(opts)
     |> Triton.Compiler.NativePlan.validate!()
   end
 
+  @doc false
   def validate_native_plan!(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     plan_or_kernel
@@ -2231,13 +2249,12 @@ defmodule Triton do
     |> Triton.Compiler.NativePlan.validate!()
   end
 
-  @doc """
-  Returns true when `validate_native_plan/1,2,3` succeeds.
-  """
+  @doc false
   def native_plan_valid?(plan_or_kernel, opts \\ []) do
     validate_native_plan(plan_or_kernel, opts) == :ok
   end
 
+  @doc false
   def native_plan_valid?(plan_or_kernel, args, opts)
       when is_list(args) and is_list(opts) do
     validate_native_plan(plan_or_kernel, args, opts) == :ok
@@ -2313,192 +2330,142 @@ defmodule Triton do
     )
   end
 
-  @doc """
-  Returns one field from an inspectable native compilation plan.
-  """
+  @doc false
   def native_plan_field(plan_or_kernel, key, default \\ nil)
 
+  @doc false
   def native_plan_field(%Kernel{compiled: %{stage: :native_plan} = plan}, key, default),
     do: native_plan_field(plan, key, default)
 
+  @doc false
   def native_plan_field(%Kernel{} = kernel, key, default),
     do: kernel |> Kernel.to_native_plan() |> native_plan_field(key, default)
 
+  @doc false
   def native_plan_field(%KernelFunction{} = kernel_fun, key, default),
     do: kernel_fun |> to_native_plan() |> native_plan_field(key, default)
 
+  @doc false
   def native_plan_field(%{kind: kind} = wrapper, key, default)
       when kind in [:autotune, :heuristics],
       do: wrapper |> to_native_plan() |> native_plan_field(key, default)
 
+  @doc false
   def native_plan_field(fun, key, default) when is_function(fun),
     do: fun |> to_native_plan() |> native_plan_field(key, default)
 
+  @doc false
   def native_plan_field(%{stage: :native_plan} = plan, key, default),
     do: Map.get(plan, key, default)
 
-  @doc """
-  Returns a native plan's entry function name.
-  """
+  @doc false
   def native_plan_entry(plan), do: native_plan_field(plan, :entry)
 
-  @doc """
-  Returns a native plan's stable cache key for the planned native artifact.
-  """
+  @doc false
   def native_plan_cache_key(plan), do: native_plan_field(plan, :cache_key)
 
-  @doc """
-  Returns a native plan's artifact cache layout.
-  """
+  @doc false
   def native_plan_cache(plan), do: native_plan_field(plan, :cache)
 
-  @doc """
-  Returns a native plan's cache manifest payload.
-  """
+  @doc false
   def native_plan_manifest(plan), do: native_plan_field(plan, :manifest)
 
-  @doc """
-  Returns a native plan's target backend.
-  """
+  @doc false
   def native_plan_target(plan), do: native_plan_field(plan, :target)
 
-  @doc """
-  Returns a native plan's target architecture.
-  """
+  @doc false
   def native_plan_arch(plan), do: native_plan_field(plan, :arch)
 
-  @doc """
-  Returns a native plan's current readiness status.
-  """
+  @doc false
   def native_plan_status(plan), do: native_plan_field(plan, :status)
 
-  @doc """
-  Returns a native plan's native MLIR/NIF availability diagnostics.
-  """
+  @doc false
   def native_plan_native_status(plan), do: native_plan_field(plan, :native_status)
 
-  @doc """
-  Returns a native plan's textual TTIR module.
-  """
+  @doc false
   def native_plan_module(plan), do: native_plan_field(plan, :module)
 
-  @doc """
-  Returns a native plan's planned lowering pipeline.
-  """
+  @doc false
   def native_plan_pipeline(plan), do: native_plan_field(plan, :pipeline, [])
 
-  @doc """
-  Returns a native plan's expected artifacts.
-  """
+  @doc false
   def native_plan_artifacts(plan), do: native_plan_field(plan, :artifacts, [])
 
-  @doc """
-  Returns native-plan artifacts for a specific stage.
-  """
+  @doc false
   def native_plan_artifacts(plan, stage) when is_atom(stage) do
     plan
     |> native_plan_artifacts()
     |> Enum.filter(&(Map.get(&1, :stage) == stage))
   end
 
-  @doc """
-  Returns the first native-plan artifact for a stage.
-  """
+  @doc false
   def native_plan_artifact(plan, stage, default \\ nil) when is_atom(stage) do
     plan
     |> native_plan_artifacts(stage)
     |> List.first(default)
   end
 
-  @doc """
-  Returns native-plan artifacts that are currently blocked.
-  """
+  @doc false
   def native_plan_blocked_artifacts(plan) do
     plan
     |> native_plan_artifacts()
     |> Enum.filter(&(Map.get(&1, :blocked_by) not in [nil, false]))
   end
 
-  @doc """
-  Returns native-plan artifacts that are available or planned and not blocked.
-  """
+  @doc false
   def native_plan_unblocked_artifacts(plan) do
     plan
     |> native_plan_artifacts()
     |> Enum.reject(&(Map.get(&1, :blocked_by) not in [nil, false]))
   end
 
-  @doc """
-  Returns native-plan lowering stages with pass and artifact readiness metadata.
-  """
+  @doc false
   def native_plan_lowering_stages(plan), do: native_plan_field(plan, :lowering_stages, [])
 
-  @doc """
-  Returns one native-plan lowering stage by stage key.
-  """
+  @doc false
   def native_plan_lowering_stage(plan, stage, default \\ nil) when is_atom(stage) do
     plan
     |> native_plan_lowering_stages()
     |> Enum.find(default, &(Map.get(&1, :stage) == stage))
   end
 
-  @doc """
-  Returns native-plan lowering stages that are currently blocked.
-  """
+  @doc false
   def native_plan_blocked_lowering_stages(plan) do
     plan
     |> native_plan_lowering_stages()
     |> Enum.filter(&(Map.get(&1, :blocked_by) not in [nil, false]))
   end
 
-  @doc """
-  Returns native-plan lowering stages that are available or planned and not blocked.
-  """
+  @doc false
   def native_plan_unblocked_lowering_stages(plan) do
     plan
     |> native_plan_lowering_stages()
     |> Enum.reject(&(Map.get(&1, :blocked_by) not in [nil, false]))
   end
 
-  @doc """
-  Returns a native plan's launch contract.
-  """
+  @doc false
   def native_plan_launch(plan), do: native_plan_field(plan, :launch)
 
-  @doc """
-  Returns a native plan's tuning contract.
-  """
+  @doc false
   def native_plan_tuning(plan), do: native_plan_field(plan, :tuning, %{})
 
-  @doc """
-  Returns a native plan's normalized option metadata.
-  """
+  @doc false
   def native_plan_options(plan), do: native_plan_field(plan, :options, %{})
 
-  @doc """
-  Returns a native plan's kernel ABI metadata.
-  """
+  @doc false
   def native_plan_abi(plan), do: native_plan_field(plan, :abi)
 
-  @doc """
-  Returns a native plan's runtime loader contract.
-  """
+  @doc false
   def native_plan_runtime(plan), do: native_plan_field(plan, :runtime)
 
-  @doc """
-  Returns a native plan's remaining requirements.
-  """
+  @doc false
   def native_plan_requirements(plan), do: native_plan_field(plan, :requirements, [])
 
-  @doc """
-  Returns structured native-plan requirement statuses.
-  """
+  @doc false
   def native_plan_requirement_statuses(plan),
     do: native_plan_field(plan, :requirement_statuses, [])
 
-  @doc """
-  Returns one native-plan requirement status by requirement key.
-  """
+  @doc false
   def native_plan_requirement_status(plan, requirement, default \\ nil)
       when is_atom(requirement) do
     plan
@@ -2506,9 +2473,7 @@ defmodule Triton do
     |> Enum.find(default, &(Map.get(&1, :requirement) == requirement))
   end
 
-  @doc """
-  Returns true when a native-plan requirement is currently satisfied.
-  """
+  @doc false
   def native_plan_requirement_satisfied?(plan, requirement) when is_atom(requirement) do
     case native_plan_requirement_status(plan, requirement) do
       %{status: status} when status in [:available, :provided_by_native_mlir_nif, :specified] ->
@@ -2519,31 +2484,17 @@ defmodule Triton do
     end
   end
 
-  @doc """
-  Returns concrete blockers preventing a native plan from executable GPU launch.
-
-  ## Examples
-
-      iex> alias Triton.Language, as: Tl
-      iex> kernel = Triton.jit(fn x -> Tl.maximum(x, 0) end, [Triton.tensor_spec(:int32, {2})])
-      iex> Triton.native_plan_blockers(kernel) == []
-      false
-
-  """
+  @doc false
   def native_plan_blockers(plan), do: native_plan_field(plan, :blockers, [])
 
-  @doc """
-  Returns one native-plan blocker by requirement key.
-  """
+  @doc false
   def native_plan_blocker(plan, requirement, default \\ nil) when is_atom(requirement) do
     plan
     |> native_plan_blockers()
     |> Enum.find(default, &(Map.get(&1, :requirement) == requirement))
   end
 
-  @doc """
-  Returns a compact readiness summary for a native plan.
-  """
+  @doc false
   def native_plan_summary(plan) do
     artifacts = native_plan_artifacts(plan)
     blocked_artifacts = native_plan_blocked_artifacts(plan)
@@ -2585,104 +2536,69 @@ defmodule Triton do
   defp manifest_path(%{path: path}), do: path
   defp manifest_path(_manifest), do: nil
 
-  @doc """
-  Returns true when a native-plan requirement has a concrete blocker.
-  """
+  @doc false
   def native_plan_requirement_blocked?(plan, requirement) when is_atom(requirement) do
     not is_nil(native_plan_blocker(plan, requirement))
   end
 
-  @doc """
-  Returns true when a native plan is marked ready and has no known blockers to
-  executable launch.
-
-  ## Examples
-
-      iex> alias Triton.Language, as: Tl
-      iex> kernel = Triton.jit(fn x -> Tl.maximum(x, 0) end, [Triton.tensor_spec(:int32, {2})])
-      iex> Triton.native_plan_executable?(kernel)
-      false
-
-  """
+  @doc false
   def native_plan_executable?(plan),
     do:
       native_plan_status(plan) == :ready_for_executable_launch and
         native_plan_blockers(plan) == []
 
-  @doc """
-  Returns a traced kernel's name.
-  """
+  @doc false
   def kernel_name(%Kernel{} = kernel), do: kernel.name
 
-  @doc """
-  Returns a traced kernel's parameter expressions.
-  """
+  @doc false
   def kernel_params(%Kernel{} = kernel), do: kernel.params
 
-  @doc """
-  Returns a traced kernel's compile-time argument specs.
-  """
+  @doc false
   def kernel_arg_specs(%Kernel{} = kernel), do: kernel.arg_specs
 
-  @doc """
-  Returns a traced kernel's body expression.
-  """
+  @doc false
   def kernel_body(%Kernel{} = kernel), do: kernel.body
 
-  @doc """
-  Returns a traced kernel's backend.
-  """
+  @doc false
   def kernel_backend(%Kernel{} = kernel), do: kernel.backend
 
-  @doc """
-  Returns a traced kernel's compiled artifact, if any.
-  """
+  @doc false
   def kernel_compiled(%Kernel{} = kernel), do: kernel.compiled
 
-  @doc """
-  Returns a traced kernel's metadata map.
-  """
+  @doc false
   def kernel_metadata(%Kernel{} = kernel), do: kernel.metadata
 
-  @doc """
-  Returns one metadata value from a traced kernel.
-  """
+  @doc false
   def kernel_metadata(%Kernel{} = kernel, key, default \\ nil),
     do: Map.get(kernel.metadata, key, default)
 
-  @doc """
-  Returns a traced kernel's compile-time constants metadata.
-  """
+  @doc false
   def kernel_constants(%Kernel{} = kernel), do: kernel_metadata(kernel, :constants, %{})
 
-  @doc """
-  Returns a traced kernel's compile-time launch grid metadata.
-  """
+  @doc false
   def kernel_grid(%Kernel{} = kernel), do: kernel_metadata(kernel, :grid)
 
-  @doc """
-  Builds an inspectable native compilation plan without requiring accelerator hardware.
-
-  The returned kernel has `backend: :native_plan` and a `compiled` map with the
-  textual TTIR module, target pipeline, requirements, and current native NIF
-  availability. It is a planning artifact, not an executable native kernel.
-  """
+  @doc false
   def native_plan(fun) when is_function(fun) do
     Compiler.compile(fun, [], backend: :native_plan)
   end
 
+  @doc false
   def native_plan(%KernelFunction{} = kernel_fun) do
     jit(kernel_fun, backend: :native_plan)
   end
 
+  @doc false
   def native_plan(%Kernel{} = kernel) do
     %{kernel | backend: :native_plan, compiled: Kernel.to_native_plan(kernel)}
   end
 
+  @doc false
   def native_plan(%Kernel{} = kernel, opts) when is_list(opts) do
     %{kernel | backend: :native_plan, compiled: Kernel.to_native_plan(kernel, opts)}
   end
 
+  @doc false
   def native_plan(%KernelFunction{} = kernel_fun, opts) when is_list(opts) do
     if Keyword.keyword?(opts) do
       jit(kernel_fun, Keyword.put(opts, :backend, :native_plan))
@@ -2691,6 +2607,7 @@ defmodule Triton do
     end
   end
 
+  @doc false
   def native_plan(fun, opts) when is_function(fun) and is_list(opts) do
     if Keyword.keyword?(opts) do
       Compiler.compile(fun, [], Keyword.put(opts, :backend, :native_plan))
@@ -2699,11 +2616,13 @@ defmodule Triton do
     end
   end
 
+  @doc false
   def native_plan(%KernelFunction{} = kernel_fun, args, opts)
       when is_list(args) and is_list(opts) do
     jit(kernel_fun, args, Keyword.put(opts, :backend, :native_plan))
   end
 
+  @doc false
   def native_plan(fun, args, opts) when is_function(fun) and is_list(args) and is_list(opts) do
     Compiler.compile(fun, args, Keyword.put(opts, :backend, :native_plan))
   end
@@ -2918,7 +2837,7 @@ defmodule Triton do
     end
   end
 
-  defp contains_nx_tensor?(%{__struct__: Nx.Tensor}), do: true
+  defp contains_nx_tensor?(%Nx.Tensor{}), do: true
 
   defp contains_nx_tensor?(value) when is_tuple(value) do
     value
@@ -2931,7 +2850,7 @@ defmodule Triton do
 
   defp contains_nx_tensor?(_value), do: false
 
-  defp contains_tensor_like?(%{__struct__: Nx.Tensor}), do: false
+  defp contains_tensor_like?(%Nx.Tensor{}), do: false
   defp contains_tensor_like?(value), do: tensor_like?(value)
 
   defp wrapper_compile_opts(%{kind: :autotune, configs: configs, opts: wrapper_opts}, _args, opts) do
@@ -3046,7 +2965,7 @@ defmodule Triton do
 
   defp flatten_tensor_value!(value, _opts), do: flatten_tensor_value!(value)
 
-  defp flatten_tensor_value!(%{__struct__: Nx.Tensor, shape: shape, type: type} = tensor)
+  defp flatten_tensor_value!(%Nx.Tensor{shape: shape, type: type} = tensor)
        when is_tuple(shape) do
     {shape, type, flatten_tensor_values!(tensor_values!(tensor))}
   end
@@ -3104,25 +3023,7 @@ defmodule Triton do
     end
   end
 
-  defp tensor_values!(%{__struct__: Nx.Tensor} = tensor) do
-    cond do
-      Code.ensure_loaded?(Nx) and function_exported?(Nx, :to_flat_list, 1) ->
-        apply(Nx, :to_flat_list, [tensor])
-
-      Map.has_key?(tensor, :data) ->
-        Map.fetch!(tensor, :data)
-
-      Map.has_key?(tensor, :values) ->
-        Map.fetch!(tensor, :values)
-
-      Map.has_key?(tensor, :value) ->
-        Map.fetch!(tensor, :value)
-
-      true ->
-        raise ArgumentError,
-              "cannot read values from Nx tensor without Nx.to_flat_list/1 or a :data/:values/:value field"
-    end
-  end
+  defp tensor_values!(%Nx.Tensor{} = tensor), do: Nx.to_flat_list(tensor)
 
   defp flatten_tensor_values!(values) when is_list(values) do
     {_shape, flattened} = flatten_tensor_shape!(values)

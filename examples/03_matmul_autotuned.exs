@@ -60,8 +60,8 @@ defmodule Ex03.Kernels do
 end
 
 defmodule Ex03.Run do
-  @f32 Triton.ptr(:float32)
-  @i32 Triton.scalar_spec({:s, 32})
+  @f32 Triton.ptr(:f32)
+  @i32 Triton.scalar_spec(:s32)
   @specs [@f32, @f32, @f32, @i32, @i32]
 
   @size 1024
@@ -160,8 +160,8 @@ defmodule Ex03.Run do
     bm = winner[:constants][:bm]
     bn = winner[:constants][:bn]
 
-    {:ok, c_bin} =
-      Triton.Runtime.CUDA.launch(best.kernel.compiled, [a, b, c, m, n],
+    c_bin =
+      Triton.Runtime.CUDA.launch!(best.kernel.compiled, [a, b, c, m, n],
         grid: {cdiv(m, bm), cdiv(n, bn), 1},
         return: {:arg, 2}
       )

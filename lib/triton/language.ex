@@ -1,4 +1,48 @@
 defmodule Triton.Language do
+  @moduledoc """
+  The Triton kernel language, embedded in Elixir.
+
+  `use Triton.Language` prepares a module for writing GPU kernels:
+  arithmetic and comparison operators are rebound to their tensor forms
+  inside kernel bodies, and this module's functions — loads and stores,
+  `arange/2`, reductions like `sum/2` and `max/2`, `dot/2`, shape
+  manipulation, math functions — become the kernel vocabulary, mirroring
+  Python Triton's `tl.*` namespace.
+
+      defmodule MyKernels do
+        use Triton.Language
+
+        defkernel softmax(x_ptr, out_ptr, n_cols, block \\\\ 1024),
+          out: [out_ptr: [like: :x_ptr]],
+          grid: fn %{x_ptr: x} -> {elem(Nx.shape(x), 0)} end do
+          row = program_id(0)
+          offs = arange(0, block)
+          mask = offs < n_cols
+          x = load(x_ptr + row * n_cols + offs, mask: mask, other: -1.0e30)
+          e = exp(x - max(x, axis: 0))
+          store(out_ptr + row * n_cols + offs, e / sum(e, axis: 0), mask: mask)
+        end
+      end
+
+      out = MyKernels.softmax(x, 1000)
+
+  See `defkernel/3` for the full definition and calling story: declared
+  kernels are ordinary tensor functions, usable eagerly and inside
+  `Nx.Defn` (where they compile into the XLA program as custom calls under
+  EXLA). Kernels trace to an inspectable IR that runs on a pure-Elixir
+  reference interpreter or compiles natively through Triton's real MLIR
+  pipelines — see `Triton` for compilation (`Triton.jit/3`) and
+  interpreter execution, `Triton.Kernel` for introspection, and
+  `Triton.Runtime.CUDA` for the native runtime.
+
+  Kernel bodies use full Elixir syntax: `if`/`cond`/`case` lower to
+  `where/3`, multi-statement blocks preserve every `store/3`, and
+  `for ... <- range(...), reduce:` compiles to a native `scf.for` loop.
+  Functions in this module are meant to be called inside kernel bodies
+  (unqualified, via the `use`) or through an alias such as
+  `alias Triton.Language, as: Tl` in anonymous `Triton.kernel/1` kernels.
+  """
+
   import Kernel,
     except: [
       +: 2,
@@ -548,35 +592,74 @@ defmodule Triton.Language do
   Defines a named Triton kernel.
 
   Default argument values become named compile-time constants (like
-  `tl.constexpr` in Python Triton). For a kernel
+  `tl.constexpr` in Python Triton). Kernels describe their own launch with
+  the `out:` and `grid:` options:
 
-      defkernel softmax(x_ptr, out_ptr, n_cols, block \\\\ 1024) do
+      defkernel softmax(x_ptr, out_ptr, n_cols, block \\\\ 1024),
+        out: [out_ptr: [like: :x_ptr]],
+        grid: fn %{x_ptr: x} -> {elem(Nx.shape(x), 0)} end do
         ...
       end
 
-  the following functions are generated:
+      out = MyKernels.softmax(x, 1000)
+
+  The generated call takes one Nx argument per *input* parameter (tensors
+  for pointers, numbers for scalars), allocates the declared outputs, and
+  returns them (a tuple, in declaration order, when there are several). It
+  works eagerly (native CUDA when available, zero-copy for EXLA tensors)
+  and directly inside `defn`, where it compiles into the XLA program as a
+  custom call under EXLA. Compilation is cached per argument-spec/constants.
+
+  ## Declarations
+
+    * `out:` — which parameters are outputs and how to shape them:
+      `out: :out_ptr` (like the first tensor input), `out: [:a, :b]`, or
+      `out: [a: [like: :x_ptr], b: [shape: {4}, type: :f32]]`; the general
+      form is a function of the args map returning a template:
+      `out: [out_ptr: fn %{x_ptr: x} -> Nx.template({elem(Nx.shape(x), 0)}, :f32) end]`.
+
+    * `grid:` — the launch grid as a function of the args map (runtime
+      arguments and resolved constants, keyed by parameter name), returning
+      a tuple. `Triton.cdiv/2` is the usual building block. A literal tuple
+      also works as a static default.
+
+  ## Call options
+
+  Known option keys in the keyword tail (`:grid`, `:out`, `:backend`,
+  `:name`, `:arch`, `:cache_dir`, `:device`, `:num_warps`, `:num_ctas`,
+  `:num_stages`, `:constants`) configure or override the launch; any other
+  key is shorthand for a named constant, e.g. `block: 256`.
+
+  ## Other generated functions
 
     * `softmax()`, `softmax(arg_specs)`, `softmax(arg_specs, opts)` —
       compile the kernel with explicit argument specs (see `Triton.jit/3`)
       and return a `%Triton.Kernel{}` for `Triton.launch/3`,
       `Triton.Runtime.CUDA.launch/3`, or `Triton.Autotuner`.
 
-    * `softmax(x, out, n_cols)` and `softmax(x, out, n_cols, opts)` — the
-      tensor-facing call, taking one argument per non-constant kernel
-      parameter. Pass Nx tensors for pointer parameters and numbers for
-      scalars; pass an `Nx.template/2` in each argument slot the kernel
-      writes through — its position marks the output, its shape/type
-      describe the allocation, and the call returns the filled tensor (a
-      tuple, in template order, when there are several). Compilation is
-      cached per argument-spec/constants, EXLA CUDA tensors pass in
-      zero-copy, and the same call works inside `Nx.Defn` (wrap it in a
-      `deftransform` so concrete shapes are available for the grid). Known
-      option keys (`:grid`, `:backend`, `:name`, `:arch`, `:cache_dir`,
-      `:device`, `:num_warps`, `:num_ctas`, `:num_stages`, `:constants`)
-      configure the launch; any other key is shorthand for a named
-      constant, e.g. `block: 256`. See `Triton.Defn` for details.
+  Kernels without `out:`/`grid:` declarations are still callable with Nx
+  tensors by passing an `Nx.template/2` in each output argument's position
+  and a `grid:` option. See `Triton.Defn` for details.
   """
   defmacro defkernel(call, opts \\ [], do: body) do
+    # out: declarations and fn-valued grid: declarations are kept as AST and
+    # injected into the generated call (functions cannot ride through the
+    # evaluated/escaped default opts); literal grids stay in the opts and
+    # work as launch defaults through the existing path.
+    {out_decl_ast, opts} = pop_ast_opt(opts, :out)
+
+    {grid_decl_ast, opts} =
+      case opts do
+        list when is_list(list) ->
+          case Keyword.get(list, :grid) do
+            {:fn, _, _} = fn_ast -> {fn_ast, Keyword.delete(list, :grid)}
+            _other -> {nil, list}
+          end
+
+        other ->
+          {nil, other}
+      end
+
     opts = eval_defkernel_opts!(opts, __CALLER__)
 
     {name, args} =
@@ -610,10 +693,16 @@ defmodule Triton.Language do
 
     body = __kernel_ast__(body)
 
-    {dsl_import, tensor_call, tensor_call_with_opts} =
-      defkernel_tensor_call_asts(name, fun_name, args, arg_names, default_opts)
+    out_params = normalize_out_declaration!(name, out_decl_ast, args, default_opts)
 
-    tensor_arity = tensor_call_arity(args, default_opts)
+    {dsl_import, tensor_call, tensor_call_with_opts} =
+      defkernel_tensor_call_asts(name, fun_name, args, arg_names, default_opts, %{
+        out_params: out_params,
+        grid_ast: grid_decl_ast
+      })
+
+    out_names = Enum.map(out_params, &elem(&1, 0))
+    tensor_arity = Kernel.-(tensor_call_arity(args, default_opts), length(out_names))
 
     fun_def =
       quote do
@@ -660,19 +749,98 @@ defmodule Triton.Language do
         end
       end
 
-    # Clauses of the same name/arity must stay adjacent: the tensor-facing
-    # clause for a kernel with N runtime parameters shares arity N (and N + 1
-    # for the options variant) with the spec-list compile clauses when N <= 2.
+    # Ordering rules: a pending @doc attaches to the FIRST generated
+    # definition, so the tensor-facing call (the kernel's public face) must
+    # come first — the compiler applies pending docs to whatever definition
+    # follows, and the first alternative used to be a defp, discarding the
+    # doc with a warning. Clauses of the same name/arity must also stay
+    # adjacent: the tensor-facing clause for a kernel with N input
+    # parameters shares arity N (and N + 1 for the options variant) with
+    # the spec-list compile clauses when N <= 2.
     definitions =
-      if tensor_arity == 1 do
-        [dsl_import, fun_def, compile_arity_0, compile_arity_1, tensor_call, compile_arity_2] ++
-          [tensor_call_with_opts]
-      else
-        [dsl_import, fun_def, compile_arity_0, compile_arity_1, compile_arity_2, tensor_call] ++
-          [tensor_call_with_opts]
+      cond do
+        is_nil(tensor_call) ->
+          [compile_arity_0, compile_arity_1, compile_arity_2, fun_def]
+
+        Kernel.==(tensor_arity, 1) ->
+          [dsl_import, tensor_call, compile_arity_1, tensor_call_with_opts, compile_arity_2] ++
+            [compile_arity_0, fun_def]
+
+        Kernel.==(tensor_arity, 2) ->
+          [dsl_import, tensor_call, compile_arity_2, tensor_call_with_opts, compile_arity_1] ++
+            [compile_arity_0, fun_def]
+
+        true ->
+          [dsl_import, tensor_call, tensor_call_with_opts, compile_arity_0, compile_arity_1] ++
+            [compile_arity_2, fun_def]
       end
 
     {:__block__, [], Enum.reject(definitions, &is_nil/1)}
+  end
+
+  defp pop_ast_opt(opts, key) when is_list(opts), do: Keyword.pop(opts, key)
+  defp pop_ast_opt(opts, _key), do: {nil, opts}
+
+  # Normalizes the out: declaration AST to [{param_name, spec_ast}] pairs.
+  # Accepted forms: `out: :out_ptr`, `out: [:a, :b]` (like the first tensor
+  # input), and `out: [a: [like: :x], b: fn args -> template end]`.
+  defp normalize_out_declaration!(_name, nil, _args, _default_opts), do: []
+
+  defp normalize_out_declaration!(name, decl, args, default_opts) do
+    arg_names = Enum.map(args, &arg_name!/1)
+
+    constant_names =
+      default_opts |> Keyword.get(:constants, %{}) |> Map.new() |> Map.keys()
+
+    entries =
+      case decl do
+        param when is_atom(param) -> [{param, :like_first}]
+        list when is_list(list) -> Enum.map(list, &normalize_out_entry!(name, &1))
+        other -> raise_out_error!(name, other)
+      end
+
+    for {param, _spec} <- entries do
+      cond do
+        param in constant_names ->
+          raise ArgumentError,
+                "defkernel #{name} declares out: #{inspect(param)}, but #{inspect(param)} is a compile-time constant"
+
+        param in arg_names ->
+          :ok
+
+        true ->
+          raise ArgumentError,
+                "defkernel #{name} declares out: #{inspect(param)}, but the kernel has no such parameter (parameters: #{inspect(arg_names)})"
+      end
+    end
+
+    if Kernel.!=(entries, Enum.uniq_by(entries, &elem(&1, 0))) do
+      raise ArgumentError, "defkernel #{name} declares duplicate out: parameters"
+    end
+
+    entries
+  end
+
+  defp normalize_out_entry!(_name, param) when is_atom(param), do: {param, :like_first}
+
+  defp normalize_out_entry!(_name, {param, spec_ast}) when is_atom(param), do: {param, spec_ast}
+
+  defp normalize_out_entry!(name, other), do: raise_out_error!(name, other)
+
+  defp raise_out_error!(name, other) do
+    raise ArgumentError,
+          "defkernel #{name} out: declaration must be a parameter name, a list of names, or name: spec pairs, got: #{Macro.to_string(other)}"
+  end
+
+  # Declaration fns (grid:, out:) are written in modules where arithmetic
+  # operators are rebound to the kernel DSL; wrap the injected AST in a
+  # lexical scope that restores plain Kernel semantics.
+  defp rebind_kernel_ops(ast) do
+    quote do
+      import Triton.Language, only: []
+      import Kernel
+      unquote(ast)
+    end
   end
 
   # Kernel parameters that are not bound to compile-time constants at
@@ -697,13 +865,23 @@ defmodule Triton.Language do
 
   # Tensor-facing call clauses: `name(tensor_args...)` and
   # `name(tensor_args..., opts)`, generated as Nx.Defn transforms so kernels
-  # are directly callable inside defn. Skipped when Nx is not available or
-  # every parameter is a constant.
-  defp defkernel_tensor_call_asts(name, fun_name, args, arg_names, default_opts) do
+  # are directly callable inside defn. Kernels with out:/grid: declarations
+  # drop the declared output parameters from the signature and resolve
+  # templates and grid at call time (`Triton.Defn.__declared_call__/7`).
+  # Skipped only when every parameter is a compile-time constant.
+  defp defkernel_tensor_call_asts(name, fun_name, args, arg_names, default_opts, decls) do
     runtime_args = defkernel_runtime_args(args, default_opts)
+    out_names = Enum.map(decls.out_params, &elem(&1, 0))
+    input_args = Enum.reject(runtime_args, fn arg -> arg_name!(arg) in out_names end)
+    declared? = match?([_ | _], decls.out_params) or not is_nil(decls.grid_ast)
 
-    if Code.ensure_loaded?(Nx.Defn) and match?([_ | _], runtime_args) do
-      [first | _rest] = runtime_args
+    if declared? and Enum.empty?(input_args) do
+      raise ArgumentError,
+            "defkernel #{name} declares every runtime parameter as an output; at least one input parameter is required"
+    end
+
+    if match?([_ | _], input_args) do
+      [first | _rest] = input_args
       opts_var = Macro.var(:opts, __MODULE__)
 
       kernel_fun =
@@ -711,8 +889,43 @@ defmodule Triton.Language do
           %Triton.KernelFunction{fun: unquote(fun_name)(), arg_names: unquote(arg_names)}
         end
 
-      arity = length(runtime_args)
+      arity = length(input_args)
       arity_with_opts = Kernel.+(arity, 1)
+
+      call_body = fn opts_ast ->
+        if declared? do
+          param_names = Enum.map(runtime_args, &arg_name!/1)
+
+          out_specs =
+            Enum.map(decls.out_params, fn
+              {param, {:fn, _, _} = fn_ast} -> {param, rebind_kernel_ops(fn_ast)}
+              {param, spec_ast} -> {param, spec_ast}
+            end)
+
+          grid_ast = if decls.grid_ast, do: rebind_kernel_ops(decls.grid_ast)
+
+          quote do
+            Triton.Defn.__declared_call__(
+              unquote(kernel_fun),
+              unquote(Macro.escape(default_opts)),
+              unquote(param_names),
+              unquote(out_specs),
+              unquote(grid_ast),
+              [unquote_splicing(input_args)],
+              unquote(opts_ast)
+            )
+          end
+        else
+          quote do
+            Triton.Defn.__kernel_call__(
+              unquote(kernel_fun),
+              unquote(Macro.escape(default_opts)),
+              [unquote_splicing(input_args)],
+              unquote(opts_ast)
+            )
+          end
+        end
+      end
 
       # When the kernel shares a name/arity with a DSL function (e.g.
       # `defkernel softmax(...)`), the local definition must win: exclude the
@@ -740,14 +953,9 @@ defmodule Triton.Language do
         quote do
           Nx.Defn.__define__(__MODULE__, :def, unquote(name), unquote(arity), :transform, %{})
 
-          def unquote(name)(unquote_splicing(runtime_args))
+          def unquote(name)(unquote_splicing(input_args))
               when Kernel.not(is_list(unquote(first))) do
-            Triton.Defn.__kernel_call__(
-              unquote(kernel_fun),
-              unquote(Macro.escape(default_opts)),
-              [unquote_splicing(runtime_args)],
-              []
-            )
+            unquote(call_body.([]))
           end
         end
 
@@ -762,14 +970,9 @@ defmodule Triton.Language do
             %{}
           )
 
-          def unquote(name)(unquote_splicing(runtime_args), unquote(opts_var))
+          def unquote(name)(unquote_splicing(input_args), unquote(opts_var))
               when Kernel.not(is_list(unquote(first))) and is_list(unquote(opts_var)) do
-            Triton.Defn.__kernel_call__(
-              unquote(kernel_fun),
-              unquote(Macro.escape(default_opts)),
-              [unquote_splicing(runtime_args)],
-              unquote(opts_var)
-            )
+            unquote(call_body.(opts_var))
           end
         end
 

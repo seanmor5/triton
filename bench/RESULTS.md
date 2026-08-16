@@ -91,28 +91,52 @@ Reading the table honestly:
   twice. This is the class of kernel the Triton integration exists for:
   fusions XLA's compiler cannot discover, not re-implementations of ops it
   already fuses well.
-* The fixed per-call overhead will shrink when kernels are spliced into
-  compiled EXLA programs as XLA custom calls (planned; today every call
-  crosses the BEAM/driver boundary and allocates through EXLA eagerly).
+* The fixed per-call overhead disappears when the call is compiled into the
+  XLA program — see the custom-call section below.
+
+## Custom calls: Triton kernels inside `EXLA.jit`
+
+Same benchmark with both sides compiled by EXLA. The tensor-facing call
+lowers to a `stablehlo.custom_call`; the Triton XLA FFI plugin
+(`priv/triton_exla_ffi.so`) launches the CUBIN directly on XLA's CUDA
+stream inside the executable — no eager dispatch, no output allocation, no
+BEAM round-trip. Custom-call results are bitwise identical to eager
+launches of the same kernel.
+
+| workload                       | Nx/EXLA    | Triton (custom call) | speedup |
+|--------------------------------|------------|----------------------|---------|
+| softmax 4096x1024              | 0.073 ms   | 0.069 ms             | **1.06x** |
+| softmax 4096x2048              | 0.060 ms   | 0.063 ms             | 0.94x   |
+| softmax 4096x4096              | 0.131 ms   | 0.134 ms             | 0.98x   |
+| attention seq=1024, d=64       | 0.066 ms   | 0.111 ms             | 0.60x   |
+| attention seq=4096, d=64       | 0.172 ms   | 0.232 ms             | 0.74x   |
+| attention seq=8192, d=64       | 0.747 ms   | 0.369 ms             | **2.02x** |
+| attention seq=16384, d=64      | 2.868 ms   | 1.228 ms             | **2.33x** |
+
+The eager-path boundary tax is gone: Triton softmax now runs at parity with
+XLA's fused softmax (1062 GB/s wall-clock at 4096x2048, vs 590 GB/s
+eagerly), and flash attention's crossover moves earlier while the long-seq
+advantage grows. The remaining gap at small attention sizes is the result
+zero-fill pass plus the custom call acting as a fusion barrier for
+neighboring XLA ops — both intrinsic to any custom-call mechanism.
 
 ## Inside an Axon model
 
 `examples/09_axon_triton_layer.exs` embeds the flash attention kernel in a
 single-head transformer encoder block (layernorm → Q/K/V dense → attention →
 out projection + residual → layernorm → MLP + residual), same weights through
-both paths. The vanilla model is one EXLA-compiled Axon graph; the Triton
-variant splits the graph at the attention seam and runs flash attention
-between two EXLA-compiled Axon segments (a Triton block cannot yet live
-inside one EXLA graph — see the EXLA 0.13.1 note in the README). Full
-inference latency, batch 1, d=64:
+both paths. Both variants are single EXLA-compiled Axon graphs; the Triton
+variant's attention layer is the flash attention kernel as an XLA custom
+call inside the compiled program. Full inference latency, batch 1, d=64:
 
 | seq   | vanilla XLA | Axon + Triton | speedup |
 |-------|-------------|---------------|---------|
-| 2048  | 0.131 ms    | 0.392 ms      | 0.33x   |
-| 4096  | 0.234 ms    | 0.508 ms      | 0.46x   |
-| 8192  | 0.811 ms    | 0.680 ms      | **1.19x** |
-| 16384 | 3.027 ms    | 1.575 ms      | **1.92x** |
+| 2048  | 0.135 ms    | 0.189 ms      | 0.71x   |
+| 4096  | 0.231 ms    | 0.266 ms      | 0.87x   |
+| 8192  | 0.802 ms    | 0.422 ms      | **1.90x** |
+| 16384 | 2.978 ms    | 1.331 ms      | **2.24x** |
 
-Same shape as the kernel-level result: the staged Triton path carries two
-extra dispatch boundaries, and the algorithmic win still takes over once the
-materialized score matrix dominates the vanilla model's runtime.
+(Before the FFI handler, the Triton variant had to be staged as two
+EXLA-compiled segments around an eager kernel call, paying two dispatch
+boundaries: 0.33x/0.46x/1.19x/1.92x on the same rows. The custom call
+recovered the difference.)

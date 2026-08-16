@@ -413,7 +413,7 @@ defmodule Triton.Interpreter do
     end)
   end
 
-  defp merge_store_memory(%{__struct__: Nx.Tensor, shape: shape, type: type}, _current, update)
+  defp merge_store_memory(%Nx.Tensor{shape: shape, type: type}, _current, update)
        when is_tuple(shape) and is_list(update) do
     Triton.to_nx(%{shape: shape, type: type, values: update})
   end
@@ -1388,25 +1388,7 @@ defmodule Triton.Interpreter do
     }
   end
 
-  defp tensor_map_values!(%{__struct__: Nx.Tensor} = tensor) do
-    cond do
-      Code.ensure_loaded?(Nx) and function_exported?(Nx, :to_flat_list, 1) ->
-        apply(Nx, :to_flat_list, [tensor])
-
-      Map.has_key?(tensor, :data) ->
-        runtime_flat_values!(Map.fetch!(tensor, :data))
-
-      Map.has_key?(tensor, :values) ->
-        runtime_flat_values!(Map.fetch!(tensor, :values))
-
-      Map.has_key?(tensor, :value) ->
-        runtime_flat_values!(Map.fetch!(tensor, :value))
-
-      true ->
-        raise ArgumentError,
-              "cannot read runtime values from Nx tensor without Nx.to_flat_list/1 or a :data/:values/:value field"
-    end
-  end
+  defp tensor_map_values!(%Nx.Tensor{} = tensor), do: Nx.to_flat_list(tensor)
 
   defp tensor_map_values!(%{data: data}), do: runtime_flat_values!(data)
   defp tensor_map_values!(%{values: values}), do: runtime_flat_values!(values)

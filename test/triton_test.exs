@@ -1664,7 +1664,7 @@ defmodule TritonTest do
       end
     end
 
-    test "converts tensor-like values to Nx tensors when Nx is available" do
+    test "converts tensor-like values to Nx tensors" do
       nx_tensor = Triton.to_nx(%{shape: {2, 2}, type: {:s, 32}, values: [1, 2, 3, 4]})
 
       assert %{shape: {2, 2}, type: {:s, 32}, values: [1, 2, 3, 4]} =

@@ -23,7 +23,9 @@ defmodule NxVsTriton.Kernels do
     store(out_ptr + offs, x + y, mask: mask)
   end
 
-  defkernel softmax(x_ptr, out_ptr, n_cols, block \\ 1024) do
+  defkernel softmax(x_ptr, out_ptr, n_cols, block \\ 1024),
+    out: [out_ptr: [like: :x_ptr]],
+    grid: fn %{x_ptr: x} -> {elem(Nx.shape(x), 0)} end do
     row = program_id(0)
     offs = arange(0, block)
     mask = offs < n_cols
@@ -81,7 +83,9 @@ defmodule NxVsTriton.Kernels do
     )
   end
 
-  defkernel attention(q_ptr, k_ptr, v_ptr, o_ptr, seq_len, scale, bm \\ 64, bn \\ 64, d \\ 64) do
+  defkernel attention(q_ptr, k_ptr, v_ptr, o_ptr, seq_len, scale, bm \\ 64, bn \\ 64, d \\ 64),
+    out: [o_ptr: [like: :q_ptr]],
+    grid: fn %{q_ptr: q, bm: bm} -> {Triton.cdiv(elem(Nx.shape(q), 0), bm)} end do
     offs_m = program_id(0) * bm + arange(0, bm)
     offs_d = arange(0, d)
     q = load(q_ptr + expand_dims(offs_m, 1) * d + expand_dims(offs_d, 0))
@@ -137,8 +141,30 @@ defmodule NxVsTriton.NxImpl do
   end
 end
 
+defmodule NxVsTriton.Calls do
+  # The kernels declare out:/grid:, so these are ordinary function calls —
+  # usable eagerly and inside EXLA.jit (where they lower to
+  # stablehlo.custom_call via the Triton XLA FFI plugin). Only the
+  # shape-dependent tuning rides along.
+  alias NxVsTriton.Kernels
+
+  def softmax(x) do
+    cols = elem(Nx.shape(x), 1)
+
+    Kernels.softmax(x, cols,
+      block: cols,
+      num_warps: if(cols >= 2048, do: 8, else: 4)
+    )
+  end
+
+  def attention(q, k, v) do
+    {seq, d} = Nx.shape(q)
+    Kernels.attention(q, k, v, seq, 1.0 / :math.sqrt(d), d: d)
+  end
+end
+
 defmodule NxVsTriton.Run do
-  alias NxVsTriton.{Kernels, NxImpl}
+  alias NxVsTriton.{Calls, Kernels, NxImpl}
 
   @warmup 10
   @reps 50
@@ -230,13 +256,9 @@ defmodule NxVsTriton.Run do
     for cols <- [1024, 2048, 4096] do
       x = rand({rows, cols})
 
-      triton = fn ->
-        Kernels.softmax(x, Nx.template({rows, cols}, :f32), cols,
-          grid: {rows},
-          block: cols,
-          num_warps: if(cols >= 2048, do: 8, else: 4)
-        )
-      end
+      # Same launch configuration as the jit section: Calls calls run
+      # eagerly on concrete tensors.
+      triton = fn -> Calls.softmax(x) end
 
       check!("softmax #{rows}x#{cols}", triton.(), nx_fun.(x), 1.0e-6)
 
@@ -316,7 +338,6 @@ defmodule NxVsTriton.Run do
     header("single-head attention, d=64 (Nx: materialized softmax(QK^T)V, Triton: flash)")
     nx_fun = EXLA.jit(&NxImpl.attention/4)
     d = 64
-    block = 64
 
     for seq <- [1024, 2048, 4096, 8192, 16384] do
       scale = 1.0 / :math.sqrt(d)
@@ -324,19 +345,56 @@ defmodule NxVsTriton.Run do
       k = rand({seq, d})
       v = rand({seq, d})
 
-      triton = fn ->
-        Kernels.attention(q, k, v, Nx.template({seq, d}, :f32), seq, scale,
-          grid: {cdiv(seq, block)},
-          bm: block,
-          bn: block,
-          d: d
-        )
-      end
+      # Same launch configuration as the jit section: Calls calls run
+      # eagerly on concrete tensors.
+      triton = fn -> Calls.attention(q, k, v) end
 
       check!("attention seq=#{seq}", triton.(), nx_fun.(q, k, v, scale), 2.0e-2)
 
       nx_ms = bench_ms(fn -> nx_fun.(q, k, v, scale) end)
       triton_ms = bench_ms(triton)
+
+      report("seq=#{seq}", nx_ms, triton_ms, fn ms ->
+        "#{Float.round(4 * seq * seq * d / (ms * 1.0e-3) / 1.0e12, 2)} TFLOPS"
+      end)
+    end
+  end
+
+  # Same workloads with the Triton side compiled INTO the XLA program as a
+  # custom call (EXLA.jit both sides): the per-call boundary tax disappears.
+  def jit do
+    header("softmax, rows=4096 — custom call inside EXLA.jit")
+    nx_fun = EXLA.jit(&NxImpl.softmax/1)
+    triton_fun = EXLA.jit(&Calls.softmax/1)
+    rows = 4096
+
+    for cols <- [1024, 2048, 4096] do
+      x = rand({rows, cols})
+
+      check!("jit softmax #{rows}x#{cols}", triton_fun.(x), nx_fun.(x), 1.0e-6)
+
+      nx_ms = bench_ms(fn -> nx_fun.(x) end)
+      triton_ms = bench_ms(fn -> triton_fun.(x) end)
+
+      report("#{rows}x#{cols}", nx_ms, triton_ms, fn ms ->
+        "#{Float.round(2 * rows * cols * 4 / (ms * 1.0e-3) / 1.0e9, 1)} GB/s"
+      end)
+    end
+
+    header("attention, d=64 — custom call inside EXLA.jit")
+    d = 64
+    naive = EXLA.jit(fn q, k, v -> NxImpl.attention(q, k, v, 1.0 / :math.sqrt(d)) end)
+    flash = EXLA.jit(&Calls.attention/3)
+
+    for seq <- [1024, 2048, 4096, 8192, 16384] do
+      q = rand({seq, d})
+      k = rand({seq, d})
+      v = rand({seq, d})
+
+      check!("jit attention seq=#{seq}", flash.(q, k, v), naive.(q, k, v), 2.0e-2)
+
+      nx_ms = bench_ms(fn -> naive.(q, k, v) end)
+      triton_ms = bench_ms(fn -> flash.(q, k, v) end)
 
       report("seq=#{seq}", nx_ms, triton_ms, fn ms ->
         "#{Float.round(4 * seq * seq * d / (ms * 1.0e-3) / 1.0e12, 2)} TFLOPS"
@@ -350,6 +408,7 @@ defmodule NxVsTriton.Run do
     layernorm()
     matmul()
     attention()
+    jit()
   end
 end
 
@@ -369,5 +428,6 @@ case System.argv() do
   ["layernorm"] -> NxVsTriton.Run.layernorm()
   ["matmul"] -> NxVsTriton.Run.matmul()
   ["attention"] -> NxVsTriton.Run.attention()
+  ["jit"] -> NxVsTriton.Run.jit()
   _ -> NxVsTriton.Run.all()
 end

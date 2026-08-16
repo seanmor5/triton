@@ -1,110 +1,170 @@
 defmodule Triton.Defn do
-  @moduledoc """
-  Use Triton kernels inside `Nx.Defn` computations.
-
-  Kernels defined with `Triton.Language.defkernel/3` are directly callable
-  with Nx tensors — eagerly and inside `defn` — using the kernel's own
-  signature. Outputs are marked positionally: passing an `Nx.template/3`
-  in an argument slot means "allocate this buffer, it is an output, return
-  it". Everything else is inferred: pointer specs come from the tensor
-  types, and compile-time constants ride in the keyword tail.
-
-      defmodule MyModel do
-        use Triton.Language
-        import Nx.Defn
-
-        defkernel softmax_kernel(x_ptr, out_ptr, n_cols, block \\\\ 1024) do
-          row = program_id(0)
-          offs = arange(0, block)
-          mask = offs < n_cols
-          x = load(x_ptr + row * n_cols + offs, mask: mask, other: -1.0e30)
-          e = exp(x - max(x, axis: 0))
-          store(out_ptr + row * n_cols + offs, e / sum(e, axis: 0), mask: mask)
-        end
-
-        # Launcher: runs at trace time, so shapes are concrete even under jit.
-        deftransform softmax(x) do
-          {rows, cols} = Nx.shape(x)
-
-          softmax_kernel(x, Nx.template(Nx.shape(x), Nx.type(x)), cols,
-            grid: {rows},
-            block: cols
-          )
-        end
-
-        defn model(x) do
-          x |> softmax() |> Nx.sum()
-        end
-      end
-
-  The same `softmax_kernel/4` call works with concrete tensors (an eager
-  launch — native CUDA when available, the reference interpreter otherwise)
-  and with traced tensors inside `defn`, where it becomes an `Nx.block/4`
-  node in the graph. Multi-output kernels take one template per output and
-  return a tuple in template order. Compiled kernels are cached per
-  argument-spec/constant combination, so repeated launches skip
-  recompilation.
-
-  ## Options
-
-  The keyword tail of a kernel call accepts:
-
-    * `:grid` - launch grid (defaults to the kernel's compiled grid, or `{1}`)
-    * `:backend` - force `:interpreter` for the fallback path (defaults to
-      native when available)
-    * `:arch`, `:cache_dir`, `:num_warps`, `:num_ctas`, `:num_stages` -
-      native compilation options
-    * `:device` - CUDA device for native launches
-    * `:constants` - named compile-time constants
-
-  Any other key is treated as a named constant, so `block: 128` is
-  shorthand for `constants: [block: 128]`.
-
-  ## Execution strategy
-
-  Inside a `defn` graph the kernel is an `Nx.block/4`:
-
-    1. Under an `Nx.Defn` compiler with a registered Triton custom-call
-       lowering (`EXLA.CustomCall`, future work), the kernel is spliced into
-       the compiled program as a `stablehlo.custom_call`.
-    2. Otherwise the block falls back to `Nx.runtime_call/4`: the compiled
-       program hands the inputs back to Elixir at that point in the graph,
-       Triton executes them on the native CUDA runtime when available (or
-       the reference interpreter when not), and the results flow back into
-       the program.
-
-  ## Explicit form
-
-  `kernel/4` is the explicit equivalent for kernels that don't come from
-  `defkernel` (anonymous `Triton.kernel/1` kernels, autotune wrappers):
-  inputs in a list, output template(s) separate, `:outputs` controlling
-  placement.
-  """
+  @moduledoc false
+  # Runtime machinery behind the tensor-facing calls that `defkernel`
+  # generates (see `Triton.Language.defkernel/3` for the public story).
+  #
+  # Inside a defn graph a kernel call is an `Nx.block/4` node. Under the
+  # EXLA compiler on CUDA it lowers to a `stablehlo.custom_call` handled by
+  # the Triton XLA FFI plugin (see Triton.EXLA.CustomCall); otherwise it
+  # falls back to `Nx.runtime_call/4`, executing on the native CUDA runtime
+  # when available or the reference interpreter when not. With concrete
+  # tensors the call launches eagerly, zero-copy for EXLA CUDA tensors.
+  #
+  # `kernel/4` is the explicit escape hatch for kernels that don't come
+  # from `defkernel` (anonymous `Triton.kernel/1` kernels, autotune
+  # wrappers): inputs in a list, output template(s) separate, `:outputs`
+  # controlling placement.
 
   defmodule Block do
-    @moduledoc """
-    Identifies a Triton kernel block inside an `Nx.Defn` graph.
-    """
+    @moduledoc false
+    # Identifies a Triton kernel block inside an `Nx.Defn` graph.
 
     defstruct [:kernel, :output, :grid, :outputs, :opts]
   end
 
+  alias Triton.Runtime.CUDA
+
   @max_args 8
+
+  # Options forwarded to Triton.jit when compiling a kernel for a launch.
+  @compile_opt_keys [:constants, :name, :arch, :cache_dir, :num_warps, :num_ctas, :num_stages]
 
   # Keys with call/compile meaning in a tensor-facing kernel call's keyword
   # tail; every other key is shorthand for a named constant.
-  @call_opt_keys [
-    :grid,
-    :backend,
-    :name,
-    :arch,
-    :cache_dir,
-    :device,
-    :num_warps,
-    :num_ctas,
-    :num_stages,
-    :constants
-  ]
+  @call_opt_keys [:grid, :out, :backend, :device] ++ @compile_opt_keys
+
+  @doc false
+  def __compile_opt_keys__, do: @compile_opt_keys
+
+  @doc false
+  # Entry point for tensor-facing functions generated by `defkernel` with
+  # `out:`/`grid:` declarations: only input parameters appear in the
+  # signature; output templates and the launch grid are resolved here from
+  # the declarations and an args map (runtime params + resolved constants),
+  # then the call flows through `__kernel_call__/4` with the templates placed
+  # at the declared parameters' positions.
+  def __declared_call__(kernel_form, default_opts, param_names, out_specs, grid_fun, inputs, opts) do
+    unless Keyword.keyword?(opts) do
+      raise ArgumentError,
+            "expected kernel call options to be a keyword list, got: #{inspect(opts)}"
+    end
+
+    {call_opts, constant_overrides} = Keyword.split(opts, @call_opt_keys)
+    validate_constant_overrides!(constant_overrides, default_opts)
+
+    constants =
+      %{}
+      |> merge_constants(Keyword.get(default_opts, :constants))
+      |> merge_constants(Keyword.get(call_opts, :constants))
+      |> merge_constants(constant_overrides)
+
+    out_names = Enum.map(out_specs, &elem(&1, 0))
+    input_names = param_names -- out_names
+    inputs_by_name = input_names |> Enum.zip(inputs) |> Map.new()
+
+    args_map =
+      constants
+      |> Map.filter(fn {key, _value} -> is_atom(key) end)
+      |> Map.merge(inputs_by_name)
+
+    templates = resolve_out_templates(out_specs, Keyword.get(call_opts, :out), args_map, inputs)
+    templates_by_name = out_names |> Enum.zip(templates) |> Map.new()
+
+    full_args =
+      Enum.map(param_names, fn name ->
+        case templates_by_name do
+          %{^name => template} -> template
+          _other -> Map.fetch!(inputs_by_name, name)
+        end
+      end)
+
+    opts =
+      case Keyword.get(call_opts, :grid) || resolve_grid(grid_fun, args_map) do
+        nil -> opts
+        grid -> Keyword.put(opts, :grid, grid)
+      end
+
+    __kernel_call__(kernel_form, default_opts, full_args, Keyword.delete(opts, :out))
+  end
+
+  defp resolve_out_templates(out_specs, nil, args_map, inputs) do
+    Enum.map(out_specs, fn {name, spec} -> resolve_out_template(spec, name, args_map, inputs) end)
+  end
+
+  # Call-site override: `out:` takes a template (or tuple of templates, in
+  # declaration order) in place of the declared shapes.
+  defp resolve_out_templates(out_specs, override, _args_map, _inputs) do
+    templates =
+      case override do
+        tuple when is_tuple(tuple) and not is_struct(tuple) -> Tuple.to_list(tuple)
+        single -> [single]
+      end
+
+    unless length(templates) == length(out_specs) do
+      raise ArgumentError,
+            "kernel declares #{length(out_specs)} outputs, but the out: option provides #{length(templates)} templates"
+    end
+
+    templates
+  end
+
+  defp resolve_out_template(:like_first, name, _args_map, inputs) do
+    case Enum.find(inputs, &match?(%Nx.Tensor{}, &1)) do
+      nil ->
+        raise ArgumentError,
+              "output #{inspect(name)} is declared like the first tensor input, but the call has no tensor inputs"
+
+      tensor ->
+        template_like(tensor)
+    end
+  end
+
+  defp resolve_out_template(fun, name, args_map, _inputs) when is_function(fun, 1) do
+    case fun.(args_map) do
+      %Nx.Tensor{} = result ->
+        template_like(result)
+
+      other ->
+        raise ArgumentError,
+              "the out: function for #{inspect(name)} must return an Nx template or tensor, got: #{inspect(other)}"
+    end
+  end
+
+  defp resolve_out_template(spec, name, args_map, _inputs) when is_list(spec) do
+    cond do
+      like = Keyword.get(spec, :like) ->
+        case args_map do
+          %{^like => %Nx.Tensor{} = tensor} ->
+            Nx.template(Nx.shape(tensor), Keyword.get(spec, :type) || Nx.type(tensor))
+
+          _other ->
+            raise ArgumentError,
+                  "output #{inspect(name)} is declared like: #{inspect(like)}, but #{inspect(like)} is not a tensor argument of the call"
+        end
+
+      shape = Keyword.get(spec, :shape) ->
+        Nx.template(shape, Keyword.fetch!(spec, :type))
+
+      true ->
+        raise ArgumentError,
+              "output #{inspect(name)} declaration must contain like: or shape:/type:, got: #{inspect(spec)}"
+    end
+  end
+
+  defp template_like(tensor), do: Nx.template(Nx.shape(tensor), Nx.type(tensor))
+
+  defp resolve_grid(nil, _args_map), do: nil
+
+  defp resolve_grid(fun, args_map) when is_function(fun, 1) do
+    case fun.(args_map) do
+      grid when is_tuple(grid) or is_integer(grid) ->
+        grid
+
+      other ->
+        raise ArgumentError,
+              "the kernel's grid: function must return a tuple or integer, got: #{inspect(other)}"
+    end
+  end
 
   @doc false
   # Entry point for the tensor-facing functions generated by `defkernel`:
@@ -117,6 +177,7 @@ defmodule Triton.Defn do
     end
 
     {call_opts, constant_overrides} = Keyword.split(opts, @call_opt_keys)
+    validate_constant_overrides!(constant_overrides, default_opts)
 
     constants =
       %{}
@@ -175,15 +236,52 @@ defmodule Triton.Defn do
     end
   end
 
+  # Loose keyword-tail keys are shorthand for named constants, which makes a
+  # typo'd option (`gird: {8}`) silently become a constant; catch it here by
+  # requiring loose keys to name kernel parameters.
+  defp validate_constant_overrides!(constant_overrides, default_opts) do
+    case Keyword.get(default_opts, :arg_names) do
+      arg_names when is_list(arg_names) ->
+        for {key, _value} <- constant_overrides, key not in arg_names do
+          known = arg_names ++ @call_opt_keys
+
+          raise ArgumentError,
+                "unknown option #{inspect(key)} in kernel call: loose keys must name a " <>
+                  "kernel parameter (#{inspect(arg_names)}) to set a constant, or be one " <>
+                  "of the launch options #{inspect(@call_opt_keys)}" <> did_you_mean(key, known)
+        end
+
+        :ok
+
+      # Anonymous kernels have no parameter names to validate against.
+      _other ->
+        :ok
+    end
+  end
+
+  defp did_you_mean(key, known) do
+    input = Atom.to_string(key)
+
+    best =
+      known
+      |> Enum.map(&{&1, String.jaro_distance(input, Atom.to_string(&1))})
+      |> Enum.max_by(&elem(&1, 1), fn -> {nil, 0.0} end)
+
+    case best do
+      {candidate, score} when score > 0.75 -> ". Did you mean #{inspect(candidate)}?"
+      _other -> ""
+    end
+  end
+
   defp merge_constants(acc, nil), do: acc
 
   defp merge_constants(acc, constants) when is_list(constants) or is_map(constants),
     do: Enum.into(constants, acc)
 
-  defp template?(%{__struct__: Nx.Tensor, data: %{__struct__: Nx.TemplateBackend}}), do: true
+  defp template?(%Nx.Tensor{data: %Nx.TemplateBackend{}}), do: true
   defp template?(_other), do: false
 
-  defp expr_tensor?(%{__struct__: Nx.Tensor, data: %{__struct__: Nx.Defn.Expr}}), do: true
+  defp expr_tensor?(%Nx.Tensor{data: %Nx.Defn.Expr{}}), do: true
   defp expr_tensor?(_other), do: false
 
   defp promote_input(value) when is_integer(value), do: Nx.tensor(value, type: {:s, 32})
@@ -258,7 +356,7 @@ defmodule Triton.Defn do
     # Rank-0 tensors were promoted from scalar kernel arguments during tracing.
     inputs =
       Enum.map(inputs, fn
-        %{__struct__: Nx.Tensor, shape: {}} = tensor -> Nx.to_number(tensor)
+        %Nx.Tensor{shape: {}} = tensor -> Nx.to_number(tensor)
         other -> other
       end)
 
@@ -302,7 +400,7 @@ defmodule Triton.Defn do
         launch_opts
       end
 
-    Triton.Nx.launch(kernel, args, launch_opts)
+    nx_launch(kernel, args, launch_opts)
   end
 
   # Compiles a kernel form for the given launch arguments, caching the result
@@ -311,11 +409,11 @@ defmodule Triton.Defn do
   defp resolve_kernel(%Triton.Kernel{} = kernel, _args, _opts, _native?), do: kernel
 
   defp resolve_kernel(kernel_form, args, opts, native?) do
-    specs = Enum.map(args, &Triton.Nx.launch_arg_spec/1)
+    specs = Enum.map(args, &launch_arg_spec/1)
 
     compile_opts =
       opts
-      |> Keyword.take([:constants, :name, :arch, :cache_dir, :num_warps, :num_ctas, :num_stages])
+      |> Keyword.take(@compile_opt_keys)
       |> Keyword.put(:backend, if(native?, do: :native, else: :expr))
       |> Enum.sort()
 
@@ -323,11 +421,13 @@ defmodule Triton.Defn do
 
     case :persistent_term.get(cache_key, nil) do
       nil ->
+        :telemetry.execute([:triton, :cache, :miss], %{}, %{cache: :kernel})
         kernel = Triton.jit(kernel_form, specs, compile_opts)
         :persistent_term.put(cache_key, kernel)
         kernel
 
       %Triton.Kernel{} = kernel ->
+        :telemetry.execute([:triton, :cache, :hit], %{}, %{cache: :kernel})
         kernel
     end
   end
@@ -337,7 +437,7 @@ defmodule Triton.Defn do
   # client/device so the native launch stays zero-copy end to end. The zero
   # scalar is cached per type/backend — a fresh Nx.tensor/2 would round-trip
   # host -> device on every call.
-  defp allocate_output(%{__struct__: Nx.Tensor, shape: shape, type: type}, inputs) do
+  defp allocate_output(%Nx.Tensor{shape: shape, type: type}, inputs) do
     Nx.broadcast(zero_scalar(type, allocation_backend(inputs)), shape)
   end
 
@@ -357,7 +457,7 @@ defmodule Triton.Defn do
 
   defp allocation_backend(inputs) do
     Enum.find_value(inputs, Nx.default_backend(), fn input ->
-      if Triton.Nx.cuda_backed?(input) do
+      if CUDA.device_backed?(input) do
         case input.data do
           %{buffer: %{client_name: client, device_id: device_id}} ->
             {EXLA.Backend, client: client, device_id: device_id}
@@ -369,13 +469,17 @@ defmodule Triton.Defn do
     end)
   end
 
-  defp place_outputs(inputs, outputs, :append) do
+  @doc false
+  # Places output values among the inputs per the block's :outputs mode,
+  # returning {ordered_args, output_indices}. Element-type agnostic; also
+  # used by Triton.EXLA.CustomCall to order kernel parameters.
+  def place_outputs(inputs, outputs, :append) do
     args = inputs ++ outputs
     indices = Enum.to_list(length(inputs)..(length(args) - 1)//1)
     {args, indices}
   end
 
-  defp place_outputs(inputs, outputs, indices) when is_list(indices) do
+  def place_outputs(inputs, outputs, indices) when is_list(indices) do
     unless length(indices) == length(outputs) do
       raise ArgumentError,
             "expected #{length(outputs)} output indices for the output template, got #{inspect(indices)}"
@@ -402,7 +506,7 @@ defmodule Triton.Defn do
     end)
   end
 
-  defp cast_result(%{__struct__: Nx.Tensor} = result, template) do
+  defp cast_result(%Nx.Tensor{} = result, template) do
     result
     |> Nx.reshape(template.shape)
     |> Nx.as_type(template.type)
@@ -415,12 +519,15 @@ defmodule Triton.Defn do
     |> Nx.reshape(template.shape)
   end
 
-  defp flatten_output(%{__struct__: Nx.Tensor} = template), do: [template]
+  @doc false
+  # Flattens an output template (tensor or nested tuple) into a list, in
+  # template order. Shared with Triton.EXLA.CustomCall.
+  def flatten_output(%Nx.Tensor{} = template), do: [template]
 
-  defp flatten_output(tuple) when is_tuple(tuple),
+  def flatten_output(tuple) when is_tuple(tuple),
     do: tuple |> Tuple.to_list() |> Enum.flat_map(&flatten_output/1)
 
-  defp unflatten_output(%{__struct__: Nx.Tensor}, [result]), do: result
+  defp unflatten_output(%Nx.Tensor{}, [result]), do: result
 
   defp unflatten_output(tuple, results) when is_tuple(tuple) do
     {rebuilt, []} =
@@ -434,16 +541,202 @@ defmodule Triton.Defn do
 
     List.to_tuple(rebuilt)
   end
+
+  ## Nx launch plumbing (formerly Triton.Nx)
+  #
+  # Executes kernels with Nx tensor arguments through the reference
+  # interpreter or the native CUDA runtime. EXLA CUDA-backed tensors pass to
+  # native launches zero-copy as raw device pointers.
+
+  @doc false
+  # Runs a kernel with Nx tensor arguments and returns Nx results.
+  def nx_run(kernel, args, opts \\ []) when is_list(args) do
+    if native?(kernel, opts) do
+      native_launch(kernel, args, opts)
+    else
+      Triton.run(kernel, args, Keyword.put_new(opts, :return, :nx))
+    end
+  end
+
+  @doc false
+  # Launches a kernel over a grid with Nx tensor arguments. On the
+  # interpreter path this defaults to `return: :args` so store-based kernels
+  # return their final mutated arguments as Nx tensors; on the native path
+  # device-resident EXLA tensors are mutated in place and returned.
+  def nx_launch(kernel, args, opts \\ []) when is_list(args) do
+    kernel = ensure_launch_kernel(kernel, args, opts)
+
+    if native?(kernel, opts) do
+      native_launch(kernel, args, opts)
+    else
+      {launch_opts, _rest} = split_interpreter_opts(opts)
+
+      Triton.launch(
+        kernel,
+        Enum.map(args, &to_interpreter_arg/1),
+        Keyword.put_new(launch_opts, :return, :args)
+      )
+      |> rebuild_nx_args(args)
+    end
+  end
+
+  # Grid launches follow Triton's convention: tensors passed to a launch are
+  # device buffers, so their kernel parameters trace as pointers. Scalars
+  # trace as scalar parameters.
+  defp ensure_launch_kernel(%Triton.Kernel{} = kernel, _args, _opts), do: kernel
+
+  defp ensure_launch_kernel(kernel, args, opts) do
+    specs = Enum.map(args, &launch_arg_spec/1)
+
+    compile_opts =
+      opts
+      |> Keyword.take([:constants, :name, :grid, :arch, :cache_dir])
+      |> Keyword.put(:backend, launch_compile_backend(opts))
+
+    Triton.jit(kernel, specs, compile_opts)
+  end
+
+  defp launch_compile_backend(opts) do
+    case Keyword.get(opts, :backend) do
+      backend when backend in [:native, :nvidia, :cuda] -> backend
+      _other -> :expr
+    end
+  end
+
+  @doc false
+  # Kernel argument spec for a launch argument, following Triton's convention:
+  # tensors are device buffers (pointer params), scalars are scalar params,
+  # and float scalars specialize to f32 (as in Python Triton) so they don't
+  # promote f32 tensor math to f64.
+  def launch_arg_spec(%Nx.Tensor{type: type}),
+    do: Triton.scalar_spec(Triton.ptr(type))
+
+  def launch_arg_spec({:device_pointer, _address}),
+    do: Triton.scalar_spec(Triton.ptr(:f32))
+
+  def launch_arg_spec(value) when is_float(value), do: Triton.scalar_spec({:f, 32})
+
+  def launch_arg_spec(value), do: Triton.spec(value)
+
+  defp native?(%Triton.Kernel{backend: :native}, _opts), do: true
+
+  defp native?(_kernel, opts) do
+    Keyword.get(opts, :backend) in [:native, :nvidia, :cuda] and CUDA.available?()
+  end
+
+  defp native_launch(kernel, args, opts) do
+    plan = native_plan!(kernel, opts)
+
+    {native_args, rebuild} = prepare_native_args(args)
+
+    # Always launch with `return: :args` so `rebuild` sees every binding;
+    # the user's `:return` selection is applied to the rebuilt Nx results.
+    launch_opts =
+      opts
+      |> Keyword.take([:grid, :device])
+      |> Keyword.put(:return, :args)
+
+    case CUDA.launch(plan, native_args, launch_opts) do
+      {:ok, results} ->
+        rebuilt = rebuild.(results)
+
+        case Keyword.get(opts, :return, :args) do
+          :args -> rebuilt
+          {:arg, index} -> Enum.fetch!(rebuilt, index)
+        end
+
+      {:error, failure} ->
+        raise RuntimeError, "Triton native launch failed: #{inspect(failure)}"
+    end
+  end
+
+  defp native_plan!(%Triton.Kernel{compiled: %{stage: :native_plan} = plan}, _opts), do: plan
+
+  defp native_plan!(%Triton.Kernel{} = kernel, opts) do
+    Triton.Kernel.to_native_plan(kernel, Keyword.take(opts, [:arch, :grid, :cache_dir]))
+  end
+
+  defp native_plan!(kernel, opts) do
+    {compile_opts, _rest} = Keyword.split(opts, [:constants, :name, :grid, :arch, :cache_dir])
+
+    kernel
+    |> Triton.jit(Keyword.get(opts, :specs, []), compile_opts)
+    |> native_plan!(opts)
+  end
+
+  # Converts Nx args for the native runtime: CUDA-backed tensors go as raw
+  # device pointers (zero copy, mutated in place); host tensors go as binaries
+  # and come back as tensors of the same shape/type.
+  defp prepare_native_args(args) do
+    prepared =
+      Enum.map(args, fn arg ->
+        case CUDA.device_pointer(arg) do
+          {:ok, address} -> {:device, arg, address}
+          :error -> {:host, arg}
+        end
+      end)
+
+    native_args =
+      Enum.map(prepared, fn
+        {:device, _tensor, address} -> {:device_pointer, address}
+        {:host, %Nx.Tensor{} = tensor} -> tensor
+        {:host, other} -> other
+      end)
+
+    rebuild = fn results ->
+      prepared
+      |> Enum.zip(results)
+      |> Enum.map(fn
+        {{:device, tensor, _address}, _result} -> tensor
+        {{:host, _original}, result} -> result
+      end)
+    end
+
+    {native_args, rebuild}
+  end
+
+  defp split_interpreter_opts(opts) do
+    Keyword.split(opts, [:grid, :program_id, :return, :constants, :backend, :name])
+  end
+
+  defp to_interpreter_arg(%Nx.Tensor{} = tensor), do: tensor
+  defp to_interpreter_arg(other), do: other
+
+  # The interpreter returns shaped Elixir values for return: :args; convert
+  # slots that were Nx tensors back to Nx tensors of the original type.
+  defp rebuild_nx_args(results, args) when is_list(results) and length(results) == length(args) do
+    results
+    |> Enum.zip(args)
+    |> Enum.map(fn
+      {result, %Nx.Tensor{} = original} -> to_nx_like(result, original)
+      {result, _original} -> result
+    end)
+  end
+
+  defp rebuild_nx_args(results, _args), do: results
+
+  defp to_nx_like(%Nx.Tensor{} = result, _original), do: result
+
+  defp to_nx_like(result, original) do
+    case Triton.to_nx(Triton.tensor(result, type: original.type)) do
+      %Nx.Tensor{} = tensor -> Nx.reshape(tensor, original.shape)
+      other -> other
+    end
+  rescue
+    _error -> result
+  end
 end
 
-# Lowers Triton kernel blocks to XLA custom calls when EXLA is available.
-#
-# Returning :skip keeps the runtime_call fallback until the native XLA FFI
-# handler (which launches the compiled CUBIN on the XLA-provided stream) is
-# registered; that handler is the remaining piece of the zero-copy defn path
-# and lands with the GPU-validated release.
+# Lowers Triton kernel blocks to XLA custom calls when EXLA is available: the
+# kernel's CUBIN is registered with the "triton_kernel_launch" XLA FFI handler
+# (priv/triton_exla_ffi.so) and launched directly on XLA's CUDA stream inside
+# the compiled program. Triton.EXLA.CustomCall returns :skip — falling back to
+# the runtime-callback default — when the platform is not CUDA or the plugin
+# is unavailable.
 if Code.ensure_loaded?(EXLA.CustomCall) do
   defimpl EXLA.CustomCall, for: Triton.Defn.Block do
-    def call(_block, _out, _args, _client), do: :skip
+    def call(block, out, args, client) do
+      Triton.EXLA.CustomCall.lower(block, out, args, client)
+    end
   end
 end

@@ -36,8 +36,8 @@ end
 defmodule Ex02.Run do
   alias Triton.Runtime.CUDA
 
-  @f32 Triton.ptr(:float32)
-  @i32 Triton.scalar_spec({:s, 32})
+  @f32 Triton.ptr(:f32)
+  @i32 Triton.scalar_spec(:s32)
   @specs [@f32, @f32, @i32]
 
   def random_f32_bin(count) do
@@ -84,8 +84,8 @@ defmodule Ex02.Run do
     data_bin = for v <- data, into: <<>>, do: <<v::float-32-little>>
     out_bin = :binary.copy(<<0::size(rows * cols * 32)>>)
 
-    {:ok, gpu_bin} =
-      CUDA.launch(k_gpu.compiled, [data_bin, out_bin, cols],
+    gpu_bin =
+      CUDA.launch!(k_gpu.compiled, [data_bin, out_bin, cols],
         grid: {rows, 1, 1},
         return: {:arg, 1}
       )
@@ -122,8 +122,8 @@ defmodule Ex02.Run do
     x = random_f32_bin(rows * cols)
     out = :binary.copy(<<0::size(rows * cols * 32)>>)
 
-    {:ok, stats} =
-      CUDA.bench(kernel.compiled, [x, out, cols],
+    stats =
+      CUDA.bench!(kernel.compiled, [x, out, cols],
         grid: {rows, 1, 1},
         warmup: 10,
         reps: 50

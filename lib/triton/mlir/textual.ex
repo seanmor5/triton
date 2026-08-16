@@ -1,18 +1,17 @@
 defmodule Triton.MLIR.Textual do
-  @moduledoc """
-  Lowers a traced `%Triton.Kernel{}` expression tree into *real* Triton TTIR:
-  the textual MLIR accepted by upstream Triton's `tt`/`arith`/`math` dialects.
-
-  The output of `lower/1` round-trips through the native MLIR parser
-  (`Triton.NIF.parse_module/2`) and then through Triton's actual compilation
-  pipelines down to PTX, so everything emitted here must match upstream TTIR
-  syntax exactly (explicit `tt.splat`/`tt.broadcast`, signless integers,
-  typed arith ops, region-based reductions, and so on).
-
-  Ops that have no TTIR equivalent (interpreter conveniences such as `sort`,
-  `topk`, or the Philox RNG helpers) raise `Triton.MLIR.Textual.UnsupportedError`
-  with a clear message; kernels using them remain interpreter-only.
-  """
+  @moduledoc false
+  #   Lowers a traced `%Triton.Kernel{}` expression tree into *real* Triton TTIR:
+  #   the textual MLIR accepted by upstream Triton's `tt`/`arith`/`math` dialects.
+  #
+  #   The output of `lower/1` round-trips through the native MLIR parser
+  #   (`Triton.NIF.parse_module/2`) and then through Triton's actual compilation
+  #   pipelines down to PTX, so everything emitted here must match upstream TTIR
+  #   syntax exactly (explicit `tt.splat`/`tt.broadcast`, signless integers,
+  #   typed arith ops, region-based reductions, and so on).
+  #
+  #   Ops that have no TTIR equivalent (interpreter conveniences such as `sort`,
+  #   `topk`, or the Philox RNG helpers) raise `Triton.MLIR.Textual.UnsupportedError`
+  #   with a clear message; kernels using them remain interpreter-only.
 
   alias Triton.Kernel, as: TKernel
   alias Triton.Language.Expr

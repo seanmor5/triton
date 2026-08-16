@@ -8,7 +8,21 @@ defmodule Triton.MixProject do
       elixir: "~> 1.16",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      compilers: native_compilers() ++ Mix.compilers()
+      compilers: native_compilers() ++ Mix.compilers(),
+      docs: docs()
+    ]
+  end
+
+  # The public API is five modules; everything else is @moduledoc false and
+  # may change without notice.
+  defp docs do
+    [
+      main: "Triton",
+      groups_for_modules: [
+        "Writing kernels": [Triton.Language],
+        "Compiling and running": [Triton, Triton.Kernel],
+        "Native runtime": [Triton.Runtime.CUDA, Triton.Autotuner]
+      ]
     ]
   end
 
@@ -25,8 +39,10 @@ defmodule Triton.MixProject do
     [
       {:elixir_make, "~> 0.4", runtime: false},
       {:nimble_pool, "~> 1.0"},
-      # Optional Nx integration: Triton.Nx, defn blocks, and EXLA custom calls
-      {:nx, "~> 0.12", optional: true},
+      # Nx is the tensor substrate: types, templates, binary marshalling,
+      # and the defn integration all build on it.
+      {:nx, "~> 0.12"},
+      {:telemetry, "~> 0.4 or ~> 1.0"},
       # Optional zero-copy GPU tensor interop and defn compilation
       {:exla, "~> 0.13", optional: true},
       # Property-based differential testing of kernels (interpreter vs GPU)
@@ -36,16 +52,10 @@ defmodule Triton.MixProject do
     ]
   end
 
+  # The Makefile's `all` target owns the build policy: it skips the full
+  # native build when TRITON_SKIP_NATIVE is set or cmake is missing, and the
+  # lightweight targets skip themselves when their own tools are absent.
   defp native_compilers do
-    cond do
-      System.get_env("TRITON_SKIP_NATIVE") in ["1", "true"] ->
-        []
-
-      System.find_executable("cmake") == nil ->
-        []
-
-      true ->
-        [:elixir_make]
-    end
+    if System.find_executable("make"), do: [:elixir_make], else: []
   end
 end

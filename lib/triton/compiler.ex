@@ -39,6 +39,14 @@ defmodule Triton.Compiler do
         num_stages: nil
       )
 
+    metadata = %{backend: opts[:backend], name: opts[:name]}
+
+    :telemetry.span([:triton, :compile], metadata, fn ->
+      {compile_backend(fun, args, opts), metadata}
+    end)
+  end
+
+  defp compile_backend(fun, args, opts) do
     case opts[:backend] do
       :expr ->
         trace(fun, args, opts)
@@ -47,7 +55,7 @@ defmodule Triton.Compiler do
         compile_ttir(fun, args, opts)
 
       :native_plan ->
-        compile_native_plan(fun, args, opts)
+        compile_native_plan(fun, args, native_backend_default_arch(opts))
 
       backend when backend in [:native, :nvidia, :cuda] ->
         compile_native(fun, args, opts, backend)
